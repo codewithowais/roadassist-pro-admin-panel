@@ -1,0 +1,3576 @@
+// ─────────────────────────────────────────────────────────────────
+//  AdminPanel.jsx  —  RoadAssist Pro
+//  Full admin panel:  Firebase Firestore real-time listeners,
+//  notification panel, light/dark mode, vendor KYC queue, etc.
+//
+//  Dependencies:
+//    npm install recharts firebase
+//
+//  Usage in App.jsx:
+//    import AdminPanel from './AdminPanel'
+//    export default function App() { return <AdminPanel /> }
+// ─────────────────────────────────────────────────────────────────
+import { useState, useEffect, useRef, createContext, useContext } from "react";
+import {
+  LineChart,
+  Line,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+
+// ── Firebase imports (wired to real Firestore) ────────────────────
+import {
+  auth,
+  db,
+  adminLogin,
+  adminLogout,
+  getVendors,
+  addVendor,
+  updateVendor,
+  deleteVendor,
+  approveKYC,
+  rejectKYC,
+  getUsers,
+  blockUser,
+  unbanUser,
+  getRequests,
+  updateRequestStatus,
+  getSOS,
+  resolveSOS,
+  getReviews,
+  flagReview,
+  removeReview,
+  restoreReview,
+  getNotifications,
+  sendNotification,
+  getAuditLog,
+  getAppConfig,
+  saveAppConfig,
+  logAudit,
+  uploadFile,
+  onFCMMessage,
+} from "./firebase";
+import { onAuthStateChanged } from "firebase/auth";
+
+// ─────────────────────────────────────────────────────────────────
+//  THEME
+// ─────────────────────────────────────────────────────────────────
+const DARK = {
+  mode: "dark",
+  bg: "#0d0f18",
+  sidebar: "#10121c",
+  card: "#10121c",
+  border: "#1c1f2e",
+  hover: "#181a28",
+  input: "#181a28",
+  muted: "#3a4060",
+  text2: "#6a7090",
+  text1: "#c0c4d4",
+  white: "#e2e4ee",
+  orange: "#e8630a",
+  ttBg: "#1a1d2a",
+  ttBdr: "#1c1f2e",
+  rowAlt: "#0d0f18",
+  thColor: "#2e3450",
+  scrollThumb: "#252837",
+  activeNavBg: "#1a1d2e",
+};
+const LIGHT = {
+  mode: "light",
+  bg: "#f0f2f7",
+  sidebar: "#ffffff",
+  card: "#ffffff",
+  border: "#e2e6ef",
+  hover: "#f4f6fb",
+  input: "#f4f6fb",
+  muted: "#9aa0b8",
+  text2: "#6b7280",
+  text1: "#374151",
+  white: "#111827",
+  orange: "#e8630a",
+  ttBg: "#ffffff",
+  ttBdr: "#e2e6ef",
+  rowAlt: "#f8f9fb",
+  thColor: "#9aa0b8",
+  scrollThumb: "#d1d5db",
+  activeNavBg: "#fff4ee",
+};
+const ThemeCtx = createContext(DARK);
+const useTheme = () => useContext(ThemeCtx);
+const AdminCtx = createContext({});
+const useAdmin = () => useContext(AdminCtx);
+
+// ─────────────────────────────────────────────────────────────────
+//  STATIC DATA (fallback / charts)
+// ─────────────────────────────────────────────────────────────────
+const chartData = [
+  { day: "Mon", requests: 42, revenue: 8400 },
+  { day: "Tue", requests: 58, revenue: 11600 },
+  { day: "Wed", requests: 35, revenue: 7000 },
+  { day: "Thu", requests: 67, revenue: 13400 },
+  { day: "Fri", requests: 89, revenue: 17800 },
+  { day: "Sat", requests: 112, revenue: 22400 },
+  { day: "Sun", requests: 76, revenue: 15200 },
+];
+const catData = [
+  { name: "Mechanic", value: 38, color: "#e8630a" },
+  { name: "Fuel", value: 22, color: "#3b82f6" },
+  { name: "Tyre", value: 18, color: "#22c55e" },
+  { name: "Battery", value: 12, color: "#f59e0b" },
+  { name: "Tow", value: 7, color: "#a855f7" },
+  { name: "Accident", value: 3, color: "#ef4444" },
+];
+const CAT_COLORS = {
+  Mechanic: "#e8630a",
+  "Fuel Delivery": "#3b82f6",
+  Fuel: "#3b82f6",
+  "Tyre Repair": "#22c55e",
+  Battery: "#f59e0b",
+  "Tow Truck": "#a855f7",
+  "Accident Recovery": "#ef4444",
+};
+const BADGE_PALETTE = {
+  green: { bg: "#22c55e18", color: "#16a34a", border: "#22c55e33" },
+  red: { bg: "#ef444418", color: "#dc2626", border: "#ef444433" },
+  orange: { bg: "#e8630a18", color: "#e8630a", border: "#e8630a33" },
+  blue: { bg: "#3b82f618", color: "#2563eb", border: "#3b82f633" },
+  yellow: { bg: "#f59e0b18", color: "#d97706", border: "#f59e0b33" },
+  gray: { bg: "#88888818", color: "#6b7280", border: "#88888833" },
+  purple: { bg: "#a855f718", color: "#7c3aed", border: "#a855f733" },
+};
+const BADGE_MAP = {
+  completed: "green",
+  in_progress: "orange",
+  accepted: "blue",
+  pending: "yellow",
+  cancelled: "red",
+  verified: "green",
+  unverified: "gray",
+  approved: "green",
+  rejected: "red",
+  active: "green",
+  blocked: "red",
+  visible: "green",
+  flagged: "red",
+  paid: "green",
+  superadmin: "orange",
+  manager: "blue",
+  support: "gray",
+  broadcast: "orange",
+  targeted: "blue",
+  segment: "green",
+  self_registration: "purple",
+};
+const CATEGORIES = [
+  "Mechanic",
+  "Fuel Delivery",
+  "Tyre Repair",
+  "Battery",
+  "Tow Truck",
+  "Accident Recovery",
+];
+const CITIES = [
+  "Karachi",
+  "Lahore",
+  "Islamabad",
+  "Rawalpindi",
+  "Faisalabad",
+  "Multan",
+  "Peshawar",
+  "Quetta",
+];
+
+// ─────────────────────────────────────────────────────────────────
+//  ATOMS
+// ─────────────────────────────────────────────────────────────────
+function Badge({ status, text }) {
+  const s = BADGE_PALETTE[BADGE_MAP[status]] || BADGE_PALETTE.gray;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "2px 8px",
+        borderRadius: 20,
+        fontSize: 10,
+        fontWeight: 600,
+        whiteSpace: "nowrap",
+        background: s.bg,
+        color: s.color,
+        border: `1px solid ${s.border}`,
+      }}
+    >
+      {text || status?.replace(/_/g, " ")}
+    </span>
+  );
+}
+function Av({ initials, color = "#e8630a", size = 26 }) {
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: color,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: size * 0.36,
+        fontWeight: 700,
+        color: "#fff",
+        flexShrink: 0,
+      }}
+    >
+      {initials}
+    </div>
+  );
+}
+function CatDot({ cat }) {
+  return (
+    <span
+      style={{ display: "inline-flex", alignItems: "center", fontSize: 11 }}
+    >
+      <span
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: "50%",
+          background: CAT_COLORS[cat] || "#888",
+          display: "inline-block",
+          marginRight: 5,
+        }}
+      />
+      {cat}
+    </span>
+  );
+}
+function Stars({ n = 0 }) {
+  const r = Math.round(n);
+  return (
+    <span>
+      <span style={{ color: "#f59e0b", fontSize: 11 }}>
+        {"★".repeat(r)}
+        {"☆".repeat(5 - r)}
+      </span>
+      <span style={{ color: "#9ca3af", fontSize: 10 }}> {n}</span>
+    </span>
+  );
+}
+function PBar({ pct, color }) {
+  const t = useTheme();
+  return (
+    <div
+      style={{
+        background: t.border,
+        borderRadius: 3,
+        height: 5,
+        overflow: "hidden",
+        marginTop: 4,
+      }}
+    >
+      <div
+        style={{
+          height: "100%",
+          borderRadius: 3,
+          background: color || t.orange,
+          width: `${pct}%`,
+          transition: "width .4s",
+        }}
+      />
+    </div>
+  );
+}
+function Card({ children, style }) {
+  const t = useTheme();
+  return (
+    <div
+      style={{
+        background: t.card,
+        border: `1px solid ${t.border}`,
+        borderRadius: 10,
+        padding: 14,
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+function CT({ children, action }) {
+  const t = useTheme();
+  return (
+    <div
+      style={{
+        fontSize: 10,
+        fontWeight: 600,
+        color: t.text2,
+        textTransform: "uppercase",
+        letterSpacing: 0.5,
+        marginBottom: 12,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+      }}
+    >
+      {children}
+      {action && (
+        <span
+          style={{
+            fontSize: 10,
+            color: t.orange,
+            cursor: "pointer",
+            textTransform: "none",
+            letterSpacing: 0,
+            fontWeight: 500,
+          }}
+        >
+          {action}
+        </span>
+      )}
+    </div>
+  );
+}
+function KCard({ label, value, delta, deltaType, accent }) {
+  const t = useTheme();
+  const dc =
+    deltaType === "up"
+      ? "#16a34a"
+      : deltaType === "down"
+        ? "#dc2626"
+        : t.orange;
+  return (
+    <div
+      style={{
+        background: t.card,
+        border: `1px solid ${accent ? accent + "44" : t.border}`,
+        borderRadius: 10,
+        padding: 14,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 9,
+          color: t.muted,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+          fontWeight: 600,
+          marginBottom: 7,
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: 24,
+          fontWeight: 700,
+          color: accent || t.white,
+          letterSpacing: -0.8,
+        }}
+      >
+        {value}
+      </div>
+      {delta && (
+        <div style={{ fontSize: 10, color: dc, marginTop: 3 }}>{delta}</div>
+      )}
+    </div>
+  );
+}
+function SBar({ placeholder, value, onChange }) {
+  const t = useTheme();
+  return (
+    <input
+      placeholder={placeholder}
+      value={value}
+      onChange={onChange}
+      style={{
+        background: t.input,
+        border: `1px solid ${t.border}`,
+        borderRadius: 7,
+        padding: "7px 11px",
+        color: t.text1,
+        fontSize: 12,
+        outline: "none",
+        width: "100%",
+        marginBottom: 10,
+      }}
+    />
+  );
+}
+function Chip({ label, active, onClick }) {
+  const t = useTheme();
+  return (
+    <span
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "4px 10px",
+        borderRadius: 20,
+        fontSize: 11,
+        color: active ? t.orange : t.text2,
+        border: `1px solid ${active ? t.orange + "44" : t.border}`,
+        background: active ? t.orange + "18" : t.input,
+        cursor: "pointer",
+        marginRight: 5,
+        marginBottom: 5,
+        transition: "all .1s",
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+function Btn({ children, variant = "ghost", onClick, style, disabled }) {
+  const t = useTheme();
+  const V = {
+    primary: { background: t.orange, color: "#fff", border: "none" },
+    danger: {
+      background: "#ef444418",
+      color: "#dc2626",
+      border: "1px solid #ef444428",
+    },
+    success: {
+      background: "#22c55e18",
+      color: "#16a34a",
+      border: "1px solid #22c55e28",
+    },
+    ghost: {
+      background: "transparent",
+      color: t.text2,
+      border: `1px solid ${t.border}`,
+    },
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        padding: "6px 12px",
+        borderRadius: 7,
+        fontSize: 11,
+        fontWeight: 600,
+        cursor: disabled ? "not-allowed" : "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        opacity: disabled ? 0.5 : 1,
+        ...V[variant],
+        ...style,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+function Tog({ checked, onChange }) {
+  const t = useTheme();
+  return (
+    <label
+      style={{
+        position: "relative",
+        display: "inline-block",
+        width: 32,
+        height: 18,
+        cursor: "pointer",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onChange}
+        style={{ opacity: 0, width: 0, height: 0 }}
+      />
+      <span
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: checked ? t.orange + "33" : t.border,
+          border: checked ? `1px solid ${t.orange}55` : "none",
+          borderRadius: 18,
+          transition: ".2s",
+        }}
+      />
+      <span
+        style={{
+          position: "absolute",
+          top: 3,
+          left: checked ? 14 : 3,
+          width: 12,
+          height: 12,
+          borderRadius: "50%",
+          background: checked ? t.orange : t.muted,
+          transition: ".2s",
+        }}
+      />
+    </label>
+  );
+}
+function Tbl({ headers, rows }) {
+  const t = useTheme();
+  const TH = {
+    fontSize: 9,
+    color: t.thColor,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    fontWeight: 600,
+    textAlign: "left",
+    padding: "7px 8px",
+    borderBottom: `1px solid ${t.border}`,
+  };
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <thead>
+        <tr>
+          {headers.map((h) => (
+            <th key={h} style={TH}>
+              {h}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>{rows}</tbody>
+    </table>
+  );
+}
+function TD({ children, style }) {
+  const t = useTheme();
+  return (
+    <td
+      style={{
+        padding: "9px 8px",
+        borderBottom: `1px solid ${t.rowAlt}`,
+        fontSize: 12,
+        color: t.text2,
+        ...style,
+      }}
+    >
+      {children}
+    </td>
+  );
+}
+function FG({ label, children, error }) {
+  const t = useTheme();
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          color: t.text2,
+          display: "block",
+          textTransform: "uppercase",
+          letterSpacing: 0.3,
+          marginBottom: 5,
+        }}
+      >
+        {label}
+      </label>
+      {children}
+      {error && (
+        <p style={{ fontSize: 11, color: "#dc2626", marginTop: 3 }}>{error}</p>
+      )}
+    </div>
+  );
+}
+function Inp({ value, onChange, placeholder, type = "text", style }) {
+  const t = useTheme();
+  return (
+    <input
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      type={type}
+      style={{
+        background: t.input,
+        border: `1px solid ${t.border}`,
+        borderRadius: 7,
+        padding: "8px 10px",
+        color: t.text1,
+        fontSize: 12,
+        outline: "none",
+        width: "100%",
+        ...style,
+      }}
+    />
+  );
+}
+function Sel({ value, onChange, children }) {
+  const t = useTheme();
+  return (
+    <select
+      value={value}
+      onChange={onChange}
+      style={{
+        background: t.input,
+        border: `1px solid ${t.border}`,
+        borderRadius: 7,
+        padding: "8px 10px",
+        color: t.text1,
+        fontSize: 12,
+        outline: "none",
+        width: "100%",
+      }}
+    >
+      {children}
+    </select>
+  );
+}
+function Spinner() {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 40,
+      }}
+    >
+      <div
+        style={{
+          width: 28,
+          height: 28,
+          border: "3px solid #e8630a33",
+          borderTop: "3px solid #e8630a",
+          borderRadius: "50%",
+          animation: "spin .7s linear infinite",
+        }}
+      />
+    </div>
+  );
+}
+function Empty({ icon = "📭", text = "No data found" }) {
+  const t = useTheme();
+  return (
+    <div style={{ textAlign: "center", padding: "40px 20px", color: t.muted }}>
+      <div style={{ fontSize: 28, marginBottom: 8 }}>{icon}</div>
+      {text}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  NOTIFICATION PANEL (slide-in from right)
+// ─────────────────────────────────────────────────────────────────
+function NotificationPanel({ open, onClose }) {
+  const t = useTheme();
+  const { notifications, adminUser } = useAdmin();
+  const [tab, setTab] = useState("history");
+  const [form, setForm] = useState({ title: "", body: "", topic: "all" });
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const handleSend = async () => {
+    if (!form.title || !form.body) return;
+    setSending(true);
+    try {
+      await sendNotification({ ...form, sentBy: adminUser?.email || "admin" });
+      setSent(true);
+      setTimeout(() => setSent(false), 3000);
+      setForm({ title: "", body: "", topic: "all" });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <>
+      {/* Backdrop */}
+      {open && (
+        <div
+          onClick={onClose}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "#0005",
+            zIndex: 998,
+          }}
+        />
+      )}
+
+      {/* Panel */}
+      <div
+        style={{
+          position: "fixed",
+          top: 0,
+          right: 0,
+          width: 360,
+          height: "100vh",
+          background: t.sidebar,
+          borderLeft: `1px solid ${t.border}`,
+          zIndex: 999,
+          display: "flex",
+          flexDirection: "column",
+          transform: open ? "translateX(0)" : "translateX(100%)",
+          transition: "transform .25s ease",
+          boxShadow: open ? "-8px 0 32px #0003" : "none",
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            padding: "16px 18px",
+            borderBottom: `1px solid ${t.border}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ fontSize: 14, fontWeight: 700, color: t.white }}>
+            Notifications
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "none",
+              fontSize: 18,
+              color: t.text2,
+              cursor: "pointer",
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div
+          style={{
+            display: "flex",
+            borderBottom: `1px solid ${t.border}`,
+            flexShrink: 0,
+          }}
+        >
+          {[
+            ["history", "History"],
+            ["send", "Send New"],
+          ].map(([k, l]) => (
+            <button
+              key={k}
+              onClick={() => setTab(k)}
+              style={{
+                flex: 1,
+                padding: "10px 0",
+                background: "transparent",
+                border: "none",
+                borderBottom: `2px solid ${tab === k ? t.orange : "transparent"}`,
+                color: tab === k ? t.orange : t.text2,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all .15s",
+              }}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+          {/* Send tab */}
+          {tab === "send" && (
+            <>
+              {sent && (
+                <div
+                  style={{
+                    background: "#dcfce7",
+                    border: "1px solid #bbf7d0",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    marginBottom: 12,
+                    fontSize: 12,
+                    color: "#16a34a",
+                    fontWeight: 600,
+                  }}
+                >
+                  ✓ Notification sent successfully!
+                </div>
+              )}
+              <FG label="Title">
+                <Inp
+                  value={form.title}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, title: e.target.value }))
+                  }
+                  placeholder="e.g. Road Closure Alert"
+                />
+              </FG>
+              <FG label="Body">
+                <textarea
+                  value={form.body}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, body: e.target.value }))
+                  }
+                  placeholder="Notification message..."
+                  rows={3}
+                  style={{
+                    background: t.input,
+                    border: `1px solid ${t.border}`,
+                    borderRadius: 7,
+                    padding: "8px 10px",
+                    color: t.text1,
+                    fontSize: 12,
+                    outline: "none",
+                    width: "100%",
+                    resize: "vertical",
+                  }}
+                />
+              </FG>
+              <FG label="Recipients">
+                <Sel
+                  value={form.topic}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, topic: e.target.value }))
+                  }
+                >
+                  <option value="all">All Users</option>
+                  <option value="karachi">Karachi Only</option>
+                  <option value="lahore">Lahore Only</option>
+                  <option value="vendors">All Vendors</option>
+                </Sel>
+              </FG>
+              <Btn
+                variant="primary"
+                onClick={handleSend}
+                disabled={sending || !form.title || !form.body}
+                style={{
+                  width: "100%",
+                  justifyContent: "center",
+                  marginTop: 4,
+                }}
+              >
+                {sending ? "Sending…" : "Send Notification"}
+              </Btn>
+            </>
+          )}
+
+          {/* History tab */}
+          {tab === "history" && (
+            <>
+              {notifications.length === 0 && (
+                <Empty icon="🔔" text="No notifications sent yet" />
+              )}
+              {notifications.map((n, i) => (
+                <div
+                  key={n.id || i}
+                  style={{
+                    padding: "10px 0",
+                    borderBottom: `1px solid ${t.border}`,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: 3,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: t.text1,
+                        flex: 1,
+                      }}
+                    >
+                      {n.title}
+                    </div>
+                    <Badge
+                      status={
+                        n.topic === "all"
+                          ? "broadcast"
+                          : n.topic === "vendors"
+                            ? "segment"
+                            : "targeted"
+                      }
+                      text={n.topic}
+                    />
+                  </div>
+                  <div
+                    style={{ fontSize: 11, color: t.text2, marginBottom: 4 }}
+                  >
+                    {n.body}
+                  </div>
+                  <div style={{ fontSize: 10, color: t.muted }}>
+                    By {n.sentBy} ·{" "}
+                    {n.sentAt?.toDate?.()?.toLocaleString() || "Just now"}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  ADD VENDOR MODAL
+// ─────────────────────────────────────────────────────────────────
+function AddVendorModal({ onClose }) {
+  const t = useTheme();
+  const { adminUser } = useAdmin();
+  const [form, setForm] = useState({
+    name: "",
+    category: "",
+    phone: "",
+    whatsapp: "",
+    city: "",
+    address: "",
+    lat: "",
+    lng: "",
+    operatingHours: "9am-9pm",
+    costRange: "",
+    status: "pending",
+  });
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const handleSubmit = async () => {
+    if (!form.name || !form.category || !form.phone || !form.city) {
+      setErr("Name, category, phone and city are required.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await addVendor({
+        ...form,
+        lat: parseFloat(form.lat) || 24.8607,
+        lng: parseFloat(form.lng) || 67.0011,
+      });
+      await logAudit(
+        "vendor_created",
+        "vendor",
+        form.name,
+        { name: form.name },
+        adminUser,
+      );
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "#0006",
+          zIndex: 1000,
+        }}
+      />
+      <div
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%,-50%)",
+          width: 540,
+          maxWidth: "95vw",
+          background: t.sidebar,
+          borderRadius: 16,
+          zIndex: 1001,
+          overflow: "hidden",
+          border: `1px solid ${t.border}`,
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${t.border}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ fontSize: 14, fontWeight: 700, color: t.white }}>
+            Add New Vendor
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "none",
+              fontSize: 18,
+              color: t.text2,
+              cursor: "pointer",
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div style={{ padding: 20, maxHeight: "70vh", overflowY: "auto" }}>
+          {err && (
+            <div
+              style={{
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                borderRadius: 8,
+                padding: "8px 12px",
+                fontSize: 12,
+                color: "#dc2626",
+                marginBottom: 12,
+              }}
+            >
+              {err}
+            </div>
+          )}
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
+          >
+            <FG label="Business Name *">
+              <Inp
+                value={form.name}
+                onChange={(e) => set("name", e.target.value)}
+                placeholder="AutoFix Garage"
+              />
+            </FG>
+            <FG label="Service Category *">
+              <Sel
+                value={form.category}
+                onChange={(e) => set("category", e.target.value)}
+              >
+                <option value="">Select…</option>
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </Sel>
+            </FG>
+            <FG label="Phone *">
+              <Inp
+                value={form.phone}
+                onChange={(e) => set("phone", e.target.value)}
+                placeholder="+92 300 1234567"
+              />
+            </FG>
+            <FG label="WhatsApp">
+              <Inp
+                value={form.whatsapp}
+                onChange={(e) => set("whatsapp", e.target.value)}
+                placeholder="+92 300 1234567"
+              />
+            </FG>
+            <FG label="City *">
+              <Sel
+                value={form.city}
+                onChange={(e) => set("city", e.target.value)}
+              >
+                <option value="">Select…</option>
+                {CITIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </Sel>
+            </FG>
+            <FG label="Operating Hours">
+              <Inp
+                value={form.operatingHours}
+                onChange={(e) => set("operatingHours", e.target.value)}
+              />
+            </FG>
+            <FG label="Cost Range">
+              <Inp
+                value={form.costRange}
+                onChange={(e) => set("costRange", e.target.value)}
+                placeholder="Rs. 500 – 2,000"
+              />
+            </FG>
+            <FG label="Status">
+              <Sel
+                value={form.status}
+                onChange={(e) => set("status", e.target.value)}
+              >
+                <option value="pending">Pending</option>
+                <option value="verified">Verified</option>
+              </Sel>
+            </FG>
+            <div style={{ gridColumn: "1/-1" }}>
+              <FG label="Address">
+                <Inp
+                  value={form.address}
+                  onChange={(e) => set("address", e.target.value)}
+                  placeholder="Full address"
+                />
+              </FG>
+            </div>
+            <FG label="GPS Lat">
+              <Inp
+                value={form.lat}
+                onChange={(e) => set("lat", e.target.value)}
+                placeholder="24.8607"
+              />
+            </FG>
+            <FG label="GPS Lng">
+              <Inp
+                value={form.lng}
+                onChange={(e) => set("lng", e.target.value)}
+                placeholder="67.0011"
+              />
+            </FG>
+          </div>
+        </div>
+        <div
+          style={{
+            padding: "14px 20px",
+            borderTop: `1px solid ${t.border}`,
+            display: "flex",
+            gap: 8,
+            justifyContent: "flex-end",
+          }}
+        >
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" onClick={handleSubmit} disabled={loading}>
+            {loading ? "Saving…" : "Add Vendor"}
+          </Btn>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  PAGES
+// ─────────────────────────────────────────────────────────────────
+function Dashboard() {
+  const t = useTheme();
+  const { vendors, users, requests, sos } = useAdmin();
+  const TT = {
+    background: t.ttBg,
+    border: `1px solid ${t.ttBdr}`,
+    borderRadius: 8,
+    fontSize: 11,
+    color: t.text1,
+  };
+  const liveJobs = requests.filter(
+    (r) => r.status === "in_progress" || r.status === "accepted",
+  ).length;
+  const sosToday = sos.filter((s) => {
+    if (!s.createdAt?.toDate) return false;
+    const d = s.createdAt.toDate();
+    return new Date() - d < 86400000;
+  }).length;
+
+  return (
+    <>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(6,1fr)",
+          gap: 10,
+          marginBottom: 16,
+        }}
+      >
+        <KCard
+          label="Total Users"
+          value={users.length || "—"}
+          delta="Live from Firestore"
+          accent={t.orange}
+        />
+        <KCard
+          label="Active Vendors"
+          value={vendors.filter((v) => v.status === "verified").length || "—"}
+          delta="Verified only"
+          accent="#22c55e"
+        />
+        <KCard
+          label="Live Jobs"
+          value={liveJobs}
+          delta="● real-time"
+          accent={t.orange}
+        />
+        <KCard
+          label="SOS Today"
+          value={sosToday}
+          delta="Last 24h"
+          accent="#ef4444"
+        />
+        <KCard
+          label="Pending KYC"
+          value={vendors.filter((v) => v.kyc === "pending").length}
+          delta="Needs review"
+          accent="#f59e0b"
+        />
+        <KCard
+          label="Total Requests"
+          value={requests.length}
+          delta="All time"
+        />
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 14,
+          marginBottom: 14,
+        }}
+      >
+        <Card>
+          <CT action="7-day chart">Requests Trend</CT>
+          <ResponsiveContainer width="100%" height={170}>
+            <LineChart data={chartData}>
+              <XAxis
+                dataKey="day"
+                tick={{ fill: t.muted, fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fill: t.muted, fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <Tooltip contentStyle={TT} />
+              <Line
+                type="monotone"
+                dataKey="requests"
+                stroke={t.orange}
+                strokeWidth={2}
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </Card>
+        <Card>
+          <CT>Category Split</CT>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <ResponsiveContainer width={140} height={140}>
+              <PieChart>
+                <Pie
+                  data={catData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={40}
+                  outerRadius={65}
+                  dataKey="value"
+                  stroke="none"
+                >
+                  {catData.map((e, i) => (
+                    <Cell key={i} fill={e.color} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            <div>
+              {catData.map((c) => (
+                <div
+                  key={c.name}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    marginBottom: 5,
+                    fontSize: 11,
+                    color: t.text2,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 2,
+                      background: c.color,
+                      display: "inline-block",
+                    }}
+                  />
+                  {c.name}
+                  <span style={{ color: t.muted, marginLeft: 2 }}>
+                    {c.value}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "2fr 1fr",
+          gap: 14,
+          marginBottom: 14,
+        }}
+      >
+        <Card>
+          <CT>Recent Requests</CT>
+          {requests.length === 0 ? (
+            <Empty />
+          ) : (
+            <Tbl
+              headers={["Customer", "Vendor", "Category", "Status", "Time"]}
+              rows={requests.slice(0, 6).map((r, i) => (
+                <tr key={r.id || i}>
+                  <TD style={{ fontSize: 12 }}>
+                    {r.customerName || r.cust || "—"}
+                  </TD>
+                  <TD style={{ fontSize: 12 }}>
+                    {r.vendorName || r.vendor || "—"}
+                  </TD>
+                  <TD>
+                    <CatDot cat={r.category || r.cat || "Mechanic"} />
+                  </TD>
+                  <TD>
+                    <Badge status={r.status} />
+                  </TD>
+                  <TD style={{ fontSize: 10, color: t.muted }}>
+                    {r.createdAt?.toDate?.()?.toLocaleTimeString() || "—"}
+                  </TD>
+                </tr>
+              ))}
+            />
+          )}
+        </Card>
+        <Card>
+          <CT>
+            <span>
+              SOS Alerts{" "}
+              <span style={{ color: "#ef4444", fontSize: 10 }}>● Live</span>
+            </span>
+          </CT>
+          {sos.length === 0 ? (
+            <Empty icon="🆘" text="No SOS events" />
+          ) : (
+            sos.slice(0, 3).map((s, i) => (
+              <div
+                key={s.id || i}
+                style={{
+                  background: "#dc26260d",
+                  border: "1px solid #dc262622",
+                  borderRadius: 8,
+                  padding: "9px 11px",
+                  marginBottom: 7,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 9,
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: s.resolved ? "#22c55e" : "#ef4444",
+                    flexShrink: 0,
+                  }}
+                />
+                <div>
+                  <div
+                    style={{ fontSize: 12, fontWeight: 600, color: t.text1 }}
+                  >
+                    {s.userName || s.user || "User"}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#b45309", marginTop: 2 }}>
+                    {s.location || s.loc || "—"}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </Card>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Card>
+          <CT>Revenue ₨ — Last 7 Days</CT>
+          <ResponsiveContainer width="100%" height={140}>
+            <BarChart data={chartData}>
+              <XAxis
+                dataKey="day"
+                tick={{ fill: t.muted, fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fill: t.muted, fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
+              />
+              <Tooltip
+                contentStyle={TT}
+                formatter={(v) => [`₨ ${v.toLocaleString()}`, "Revenue"]}
+              />
+              <Bar dataKey="revenue" fill={t.orange} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+        <Card>
+          <CT>Top Vendors</CT>
+          {vendors.slice(0, 4).map((v, i) => (
+            <div
+              key={v.id || i}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 9,
+                marginBottom: 10,
+              }}
+            >
+              <span style={{ fontSize: 11, color: t.muted, width: 12 }}>
+                {i + 1}
+              </span>
+              <Av
+                initials={(v.name || "V").slice(0, 2).toUpperCase()}
+                color={CAT_COLORS[v.category] || t.orange}
+                size={24}
+              />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: t.text1 }}>{v.name}</div>
+                <div style={{ fontSize: 10, color: t.muted }}>{v.category}</div>
+              </div>
+              <Stars n={v.rating || 0} />
+            </div>
+          ))}
+        </Card>
+      </div>
+    </>
+  );
+}
+
+function Users() {
+  const t = useTheme();
+  const { users, adminUser } = useAdmin();
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const filtered = users.filter(
+    (u) =>
+      (filter === "all" || u.status === filter) &&
+      (u.name?.toLowerCase().includes(search.toLowerCase()) ||
+        u.phone?.includes(search)),
+  );
+
+  const handleBlock = async (u) => {
+    if (!window.confirm(`Block ${u.name}?`)) return;
+    await blockUser(u.id, "Blocked by admin", adminUser);
+  };
+  const handleUnban = async (u) => {
+    await unbanUser(u.id, adminUser);
+  };
+
+  return (
+    <>
+      <SBar
+        placeholder="Search by name or phone…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+      <div style={{ marginBottom: 11 }}>
+        {["all", "active", "blocked"].map((f) => (
+          <Chip
+            key={f}
+            label={f.charAt(0).toUpperCase() + f.slice(1)}
+            active={filter === f}
+            onClick={() => setFilter(f)}
+          />
+        ))}
+      </div>
+      <Card>
+        {filtered.length === 0 ? (
+          <Empty />
+        ) : (
+          <Tbl
+            headers={["User", "Phone", "City", "Jobs", "Status", "Actions"]}
+            rows={filtered.map((u) => (
+              <tr key={u.id}>
+                <TD>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 7 }}
+                  >
+                    <Av
+                      initials={(u.name || "U").slice(0, 2).toUpperCase()}
+                      size={26}
+                    />
+                    {u.name || "—"}
+                  </div>
+                </TD>
+                <TD style={{ fontFamily: "monospace", fontSize: 11 }}>
+                  {u.phone || "—"}
+                </TD>
+                <TD>{u.city || "—"}</TD>
+                <TD style={{ color: t.orange, fontWeight: 600 }}>
+                  {u.totalJobs || 0}
+                </TD>
+                <TD>
+                  <Badge status={u.status || "active"} />
+                </TD>
+                <TD>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    <Btn style={{ padding: "3px 8px", fontSize: 10 }}>View</Btn>
+                    {(u.status || "active") === "active" ? (
+                      <Btn
+                        variant="danger"
+                        style={{ padding: "3px 8px", fontSize: 10 }}
+                        onClick={() => handleBlock(u)}
+                      >
+                        Block
+                      </Btn>
+                    ) : (
+                      <Btn
+                        variant="success"
+                        style={{ padding: "3px 8px", fontSize: 10 }}
+                        onClick={() => handleUnban(u)}
+                      >
+                        Unban
+                      </Btn>
+                    )}
+                  </div>
+                </TD>
+              </tr>
+            ))}
+          />
+        )}
+      </Card>
+    </>
+  );
+}
+
+function Vendors() {
+  const t = useTheme();
+  const { vendors, adminUser } = useAdmin();
+  const [search, setSearch] = useState("");
+  const [catF, setCatF] = useState("All");
+  const [kycTab, setKycTab] = useState("all");
+  const [showAdd, setShowAdd] = useState(false);
+  const [rejectModal, setRejectModal] = useState(null);
+  const [rejectReason, setRejectReason] = useState("");
+
+  const filtered = vendors.filter(
+    (v) =>
+      (catF === "All" || v.category === catF) &&
+      (kycTab === "all" || v.kyc === kycTab) &&
+      v.name?.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  const handleVerify = async (v) => {
+    await approveKYC(v.id, adminUser);
+  };
+  const handleReject = async () => {
+    await rejectKYC(rejectModal.id, rejectReason, adminUser);
+    setRejectModal(null);
+    setRejectReason("");
+  };
+  const handleSuspend = async (v) => {
+    if (!window.confirm(`Suspend ${v.name}?`)) return;
+    await updateVendor(v.id, { status: "suspended" });
+    await logAudit("vendor_suspended", "vendor", v.id, {}, adminUser);
+  };
+  const handleDelete = async (v) => {
+    if (!window.confirm(`Permanently delete ${v.name}?`)) return;
+    await deleteVendor(v.id);
+    await logAudit(
+      "vendor_deleted",
+      "vendor",
+      v.id,
+      { name: v.name },
+      adminUser,
+    );
+  };
+
+  const pendingCount = vendors.filter((v) => v.kyc === "pending").length;
+
+  return (
+    <>
+      {showAdd && <AddVendorModal onClose={() => setShowAdd(false)} />}
+      {rejectModal && (
+        <>
+          <div
+            onClick={() => setRejectModal(null)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "#0006",
+              zIndex: 1000,
+            }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%,-50%)",
+              width: 380,
+              background: t.sidebar,
+              borderRadius: 14,
+              zIndex: 1001,
+              padding: 20,
+              border: `1px solid ${t.border}`,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 700,
+                color: t.white,
+                marginBottom: 12,
+              }}
+            >
+              Reject KYC — {rejectModal.name}
+            </div>
+            <FG label="Rejection Reason">
+              <textarea
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                rows={3}
+                placeholder="e.g. Documents unclear, CNIC expired…"
+                style={{
+                  background: t.input,
+                  border: `1px solid ${t.border}`,
+                  borderRadius: 7,
+                  padding: "8px 10px",
+                  color: t.text1,
+                  fontSize: 12,
+                  outline: "none",
+                  width: "100%",
+                  resize: "vertical",
+                }}
+              />
+            </FG>
+            <div
+              style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
+            >
+              <Btn onClick={() => setRejectModal(null)}>Cancel</Btn>
+              <Btn
+                variant="danger"
+                onClick={handleReject}
+                disabled={!rejectReason.trim()}
+              >
+                Reject KYC
+              </Btn>
+            </div>
+          </div>
+        </>
+      )}
+
+      {pendingCount > 0 && (
+        <div
+          style={{
+            background: "#f59e0b18",
+            border: "1px solid #f59e0b33",
+            borderRadius: 9,
+            padding: "10px 14px",
+            marginBottom: 12,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <span style={{ fontSize: 14 }}>⚠️</span>
+          <span style={{ fontSize: 12, color: "#d97706", fontWeight: 600 }}>
+            {pendingCount} vendor{pendingCount > 1 ? "s" : ""} pending KYC
+            review
+          </span>
+          <Chip
+            label="Show Pending"
+            active={kycTab === "pending"}
+            onClick={() => setKycTab(kycTab === "pending" ? "all" : "pending")}
+          />
+        </div>
+      )}
+
+      <div
+        style={{
+          display: "flex",
+          gap: 9,
+          marginBottom: 11,
+          alignItems: "center",
+        }}
+      >
+        <SBar
+          placeholder="Search vendor name…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <Btn
+          variant="primary"
+          style={{ whiteSpace: "nowrap", marginBottom: 10 }}
+          onClick={() => setShowAdd(true)}
+        >
+          + Add Vendor
+        </Btn>
+      </div>
+      <div style={{ marginBottom: 8 }}>
+        {["All", ...CATEGORIES].map((c) => (
+          <Chip
+            key={c}
+            label={c}
+            active={catF === c}
+            onClick={() => setCatF(c)}
+          />
+        ))}
+      </div>
+      <div style={{ marginBottom: 11 }}>
+        {[
+          ["all", "All"],
+          ["pending", "Pending KYC"],
+          ["approved", "Approved"],
+          ["rejected", "Rejected"],
+        ].map(([k, l]) => (
+          <Chip
+            key={k}
+            label={l}
+            active={kycTab === k}
+            onClick={() => setKycTab(k)}
+          />
+        ))}
+      </div>
+      <Card>
+        {filtered.length === 0 ? (
+          <Empty icon="🔧" text="No vendors match filters" />
+        ) : (
+          <Tbl
+            headers={[
+              "Vendor",
+              "Category",
+              "City",
+              "Rating",
+              "KYC",
+              "Status",
+              "Source",
+              "Actions",
+            ]}
+            rows={filtered.map((v) => (
+              <tr key={v.id}>
+                <TD>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 7 }}
+                  >
+                    <Av
+                      initials={(v.name || "V").slice(0, 2).toUpperCase()}
+                      color={CAT_COLORS[v.category] || t.orange}
+                      size={24}
+                    />
+                    {v.name}
+                  </div>
+                </TD>
+                <TD>
+                  <CatDot cat={v.category} />
+                </TD>
+                <TD style={{ fontSize: 11, color: t.muted }}>{v.city}</TD>
+                <TD>
+                  <Stars n={v.rating || 0} />
+                </TD>
+                <TD>
+                  <Badge status={v.kyc || "pending"} />
+                </TD>
+                <TD>
+                  <Badge status={v.status || "pending"} />
+                </TD>
+                <TD>
+                  <Badge
+                    status={v.source || "manual"}
+                    text={
+                      v.source === "self_registration" ? "Self-reg" : "Manual"
+                    }
+                  />
+                </TD>
+                <TD>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    {v.kyc === "pending" && (
+                      <>
+                        <Btn
+                          variant="success"
+                          style={{ padding: "3px 7px", fontSize: 10 }}
+                          onClick={() => handleVerify(v)}
+                        >
+                          Approve
+                        </Btn>
+                        <Btn
+                          variant="danger"
+                          style={{ padding: "3px 7px", fontSize: 10 }}
+                          onClick={() => setRejectModal(v)}
+                        >
+                          Reject
+                        </Btn>
+                      </>
+                    )}
+                    {v.status === "verified" && (
+                      <Btn
+                        variant="danger"
+                        style={{ padding: "3px 7px", fontSize: 10 }}
+                        onClick={() => handleSuspend(v)}
+                      >
+                        Suspend
+                      </Btn>
+                    )}
+                    {v.status !== "verified" && v.kyc !== "pending" && (
+                      <Btn
+                        variant="success"
+                        style={{ padding: "3px 7px", fontSize: 10 }}
+                        onClick={() => handleVerify(v)}
+                      >
+                        Verify
+                      </Btn>
+                    )}
+                    <Btn
+                      style={{ padding: "3px 7px", fontSize: 10 }}
+                      onClick={() => handleDelete(v)}
+                    >
+                      Delete
+                    </Btn>
+                  </div>
+                </TD>
+              </tr>
+            ))}
+          />
+        )}
+      </Card>
+    </>
+  );
+}
+
+function Requests() {
+  const t = useTheme();
+  const { requests, adminUser } = useAdmin();
+  const [statusF, setStatusF] = useState("all");
+  const statuses = [
+    "all",
+    "pending",
+    "accepted",
+    "in_progress",
+    "completed",
+    "cancelled",
+  ];
+  const filtered = requests.filter(
+    (r) => statusF === "all" || r.status === statusF,
+  );
+  const [selected, setSelected] = useState(null);
+
+  const handleCancel = async (r) => {
+    if (!window.confirm("Cancel this request?")) return;
+    await updateRequestStatus(r.id, "cancelled");
+    await logAudit("request_cancelled", "request", r.id, {}, adminUser);
+  };
+
+  const TlDot = ({ state }) => {
+    const bg =
+      state === "done" ? "#22c55e" : state === "active" ? t.orange : t.border;
+    return (
+      <div
+        style={{
+          position: "absolute",
+          left: -17,
+          top: 2,
+          width: 10,
+          height: 10,
+          borderRadius: "50%",
+          background: bg,
+          border: `1.5px solid ${bg}`,
+          boxShadow: state === "active" ? `0 0 0 3px ${t.orange}22` : "none",
+        }}
+      />
+    );
+  };
+
+  return (
+    <>
+      <div style={{ marginBottom: 11 }}>
+        {statuses.map((s) => (
+          <Chip
+            key={s}
+            label={s.replace(/_/g, " ")}
+            active={statusF === s}
+            onClick={() => setStatusF(s)}
+          />
+        ))}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: selected ? "2fr 1fr" : "1fr",
+          gap: 14,
+        }}
+      >
+        <Card>
+          <CT>
+            Live Job Board{" "}
+            <span
+              style={{ color: t.muted, textTransform: "none", fontSize: 10 }}
+            >
+              ({filtered.length} jobs)
+            </span>
+          </CT>
+          {filtered.length === 0 ? (
+            <Empty icon="📋" text="No requests match" />
+          ) : (
+            <Tbl
+              headers={["Customer", "Vendor", "Category", "Status", "Time", ""]}
+              rows={filtered.map((r) => (
+                <tr
+                  key={r.id}
+                  onClick={() => setSelected(r)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <TD style={{ fontSize: 12 }}>{r.customerName || "—"}</TD>
+                  <TD style={{ fontSize: 12 }}>{r.vendorName || "—"}</TD>
+                  <TD>
+                    <CatDot cat={r.category || "Mechanic"} />
+                  </TD>
+                  <TD>
+                    <Badge status={r.status} />
+                  </TD>
+                  <TD style={{ fontSize: 10, color: t.muted }}>
+                    {r.createdAt?.toDate?.()?.toLocaleTimeString() || "—"}
+                  </TD>
+                  <TD>
+                    <Btn style={{ padding: "3px 7px", fontSize: 10 }}>
+                      Detail
+                    </Btn>
+                  </TD>
+                </tr>
+              ))}
+            />
+          )}
+        </Card>
+        {selected && (
+          <Card>
+            <CT>
+              <span>Request Detail</span>
+              <span
+                onClick={() => setSelected(null)}
+                style={{ cursor: "pointer", fontSize: 14, color: t.muted }}
+              >
+                ×
+              </span>
+            </CT>
+            <div
+              style={{
+                fontSize: 11,
+                color: t.muted,
+                marginBottom: 12,
+                fontFamily: "monospace",
+              }}
+            >
+              {selected.id}
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: t.muted, marginBottom: 4 }}>
+                Customer
+              </div>
+              <div style={{ fontSize: 13, color: t.text1, fontWeight: 600 }}>
+                {selected.customerName || "—"}
+              </div>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: t.muted, marginBottom: 4 }}>
+                Vendor
+              </div>
+              <div style={{ fontSize: 13, color: t.text1, fontWeight: 600 }}>
+                {selected.vendorName || "—"}
+              </div>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: t.muted, marginBottom: 4 }}>
+                Category
+              </div>
+              <CatDot cat={selected.category || "—"} />
+            </div>
+            <div
+              style={{
+                position: "relative",
+                paddingLeft: 20,
+                marginBottom: 12,
+              }}
+            >
+              <div
+                style={{
+                  position: "absolute",
+                  left: 6,
+                  top: 0,
+                  bottom: 0,
+                  width: 1,
+                  background: t.border,
+                }}
+              />
+              {[
+                ["Requested", "done"],
+                [
+                  "Accepted",
+                  ["accepted", "in_progress", "completed"].includes(
+                    selected.status,
+                  )
+                    ? "done"
+                    : "pending",
+                ],
+                [
+                  "On the Way",
+                  ["in_progress", "completed"].includes(selected.status)
+                    ? "done"
+                    : "pending",
+                ],
+                [
+                  "Completed",
+                  selected.status === "completed" ? "done" : "pending",
+                ],
+              ].map(([lbl, state]) => (
+                <div
+                  key={lbl}
+                  style={{ position: "relative", marginBottom: 12 }}
+                >
+                  <TlDot state={state} />
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: state === "done" ? t.text1 : t.text2,
+                    }}
+                  >
+                    {lbl}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 7 }}>
+              <Btn
+                style={{ flex: 1, justifyContent: "center", fontSize: 11 }}
+                onClick={() => updateRequestStatus(selected.id, "completed")}
+              >
+                Mark Complete
+              </Btn>
+              <Btn
+                variant="danger"
+                style={{ flex: 1, justifyContent: "center", fontSize: 11 }}
+                onClick={() => handleCancel(selected)}
+              >
+                Cancel
+              </Btn>
+            </div>
+          </Card>
+        )}
+      </div>
+    </>
+  );
+}
+
+function SOS_Page() {
+  const t = useTheme();
+  const { sos } = useAdmin();
+  const active = sos.filter((s) => !s.resolved);
+  const resolved = sos.filter((s) => s.resolved);
+  return (
+    <>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4,1fr)",
+          gap: 10,
+          marginBottom: 16,
+        }}
+      >
+        <KCard label="Active Alerts" value={active.length} accent="#ef4444" />
+        <KCard
+          label="Resolved Today"
+          value={resolved.length}
+          accent="#22c55e"
+        />
+        <KCard label="Total This Week" value={sos.length} />
+        <KCard
+          label="Avg Contacts/Alert"
+          value={
+            sos.length
+              ? Math.round(
+                  sos.reduce(
+                    (a, s) => a + (s.contactsNotified || s.contacts || 0),
+                    0,
+                  ) / sos.length,
+                )
+              : 0
+          }
+        />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Card>
+          <CT>
+            <span>
+              Active Alerts{" "}
+              <span style={{ color: "#ef4444", fontSize: 10 }}>● Live</span>
+            </span>
+          </CT>
+          {active.length === 0 ? (
+            <Empty icon="✅" text="No active SOS alerts" />
+          ) : (
+            active.map((s, i) => (
+              <div
+                key={s.id || i}
+                style={{
+                  background: "#dc26260d",
+                  border: "1px solid #dc262622",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  marginBottom: 7,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: "#ef4444",
+                    flexShrink: 0,
+                  }}
+                />
+                <div style={{ flex: 1 }}>
+                  <div
+                    style={{ fontSize: 12, fontWeight: 600, color: t.text1 }}
+                  >
+                    {s.userName || s.user || "User"}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#b45309", marginTop: 2 }}>
+                    {s.location || s.loc || "—"} ·{" "}
+                    {s.contactsNotified || s.contacts || 0} contacts
+                  </div>
+                  <div style={{ fontSize: 10, color: t.muted, marginTop: 1 }}>
+                    {s.createdAt?.toDate?.()?.toLocaleTimeString() || "—"}
+                  </div>
+                </div>
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 5 }}
+                >
+                  <Btn
+                    variant="success"
+                    style={{ padding: "2px 8px", fontSize: 10 }}
+                    onClick={() => resolveSOS(s.id)}
+                  >
+                    Resolve
+                  </Btn>
+                </div>
+              </div>
+            ))
+          )}
+        </Card>
+        <Card>
+          <CT>Hotspot Zones</CT>
+          <div
+            style={{
+              background: t.input,
+              borderRadius: 9,
+              height: 160,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: `1px solid ${t.border}`,
+              marginBottom: 12,
+              color: t.muted,
+              flexDirection: "column",
+              gap: 4,
+              fontSize: 22,
+            }}
+          >
+            🗺 <span style={{ fontSize: 11 }}>Karachi · Live Map</span>
+          </div>
+          {[
+            ["Shahrah-e-Faisal", active.length],
+            ["Burns Road", Math.max(0, active.length - 1)],
+            ["MA Jinnah Rd", Math.max(0, active.length - 2)],
+            ["Tariq Road", 0],
+          ].map(([z, c]) => (
+            <div key={z} style={{ marginBottom: 9 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 11,
+                  color: t.text2,
+                  marginBottom: 3,
+                }}
+              >
+                <span>{z}</span>
+                <span style={{ color: t.orange }}>{c}</span>
+              </div>
+              <PBar
+                pct={active.length ? Math.round((c / active.length) * 100) : 0}
+              />
+            </div>
+          ))}
+        </Card>
+      </div>
+    </>
+  );
+}
+
+function Finance() {
+  const t = useTheme();
+  const { requests } = useAdmin();
+  const completed = requests.filter((r) => r.status === "completed").length;
+  return (
+    <>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(6,1fr)",
+          gap: 10,
+          marginBottom: 16,
+        }}
+      >
+        <KCard label="Completed Jobs" value={completed} accent={t.orange} />
+        <KCard
+          label="Est. Revenue"
+          value={`₨${(completed * 800).toLocaleString()}`}
+          delta="@avg ₨800/job"
+          deltaType="up"
+        />
+        <KCard
+          label="Commission"
+          value={`₨${(completed * 80).toLocaleString()}`}
+          delta="10% avg"
+        />
+        <KCard
+          label="Pending Payouts"
+          value={`₨${(completed * 720).toLocaleString()}`}
+        />
+        <KCard label="This Month" value="₨3.7L" accent="#22c55e" />
+        <KCard label="Disputes" value="3" accent="#ef4444" />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Card>
+          <CT>Commission Rates by Category</CT>
+          {[
+            ["Mechanic", 10],
+            ["Fuel Delivery", 5],
+            ["Tyre Repair", 8],
+            ["Battery", 8],
+            ["Tow Truck", 12],
+            ["Accident Recovery", 15],
+          ].map(([c, p]) => (
+            <div
+              key={c}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 9,
+                marginBottom: 9,
+              }}
+            >
+              <div style={{ minWidth: 120 }}>
+                <CatDot cat={c} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <PBar pct={p * 5} />
+              </div>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: t.orange,
+                  minWidth: 28,
+                }}
+              >
+                {p}%
+              </span>
+              <Btn style={{ padding: "2px 8px", fontSize: 10 }}>Edit</Btn>
+            </div>
+          ))}
+        </Card>
+        <Card>
+          <CT>Revenue — Last 7 Days</CT>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={chartData}>
+              <XAxis
+                dataKey="day"
+                tick={{ fill: t.muted, fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fill: t.muted, fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: t.ttBg,
+                  border: `1px solid ${t.ttBdr}`,
+                  borderRadius: 8,
+                  fontSize: 11,
+                }}
+                formatter={(v) => [`₨ ${v.toLocaleString()}`, "Revenue"]}
+              />
+              <Bar dataKey="revenue" fill={t.orange} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+function Reviews_Page() {
+  const t = useTheme();
+  const { reviews } = useAdmin();
+  const [filter, setFilter] = useState("all");
+  const filtered = reviews.filter(
+    (r) => filter === "all" || r.status === filter,
+  );
+  return (
+    <>
+      <div style={{ marginBottom: 11 }}>
+        {["all", "visible", "flagged"].map((f) => (
+          <Chip
+            key={f}
+            label={f.charAt(0).toUpperCase() + f.slice(1)}
+            active={filter === f}
+            onClick={() => setFilter(f)}
+          />
+        ))}
+      </div>
+      <Card style={{ marginBottom: 14 }}>
+        {filtered.length === 0 ? (
+          <Empty icon="⭐" text="No reviews" />
+        ) : (
+          <Tbl
+            headers={[
+              "Vendor",
+              "Reviewer",
+              "Rating",
+              "Review",
+              "Date",
+              "Status",
+              "Actions",
+            ]}
+            rows={filtered.map((r, i) => (
+              <tr key={r.id || i}>
+                <TD style={{ fontWeight: 600, color: t.text1, fontSize: 11 }}>
+                  {r.vendorName || r.vendor || "—"}
+                </TD>
+                <TD style={{ fontSize: 11 }}>{r.userName || r.user || "—"}</TD>
+                <TD>
+                  <Stars n={r.rating || 0} />
+                </TD>
+                <TD
+                  style={{
+                    maxWidth: 160,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {r.text || "—"}
+                </TD>
+                <TD style={{ fontSize: 10, color: t.muted }}>
+                  {r.createdAt?.toDate?.()?.toLocaleDateString() ||
+                    r.date ||
+                    "—"}
+                </TD>
+                <TD>
+                  <Badge status={r.status || "visible"} />
+                </TD>
+                <TD>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {r.status === "flagged" ? (
+                      <Btn
+                        variant="success"
+                        style={{ padding: "2px 7px", fontSize: 10 }}
+                        onClick={() => restoreReview(r.id)}
+                      >
+                        Restore
+                      </Btn>
+                    ) : (
+                      <Btn
+                        style={{ padding: "2px 7px", fontSize: 10 }}
+                        onClick={() => flagReview(r.id)}
+                      >
+                        Flag
+                      </Btn>
+                    )}
+                    <Btn
+                      variant="danger"
+                      style={{ padding: "2px 7px", fontSize: 10 }}
+                      onClick={() => removeReview(r.id)}
+                    >
+                      Remove
+                    </Btn>
+                  </div>
+                </TD>
+              </tr>
+            ))}
+          />
+        )}
+      </Card>
+    </>
+  );
+}
+
+function AuditLog_Page() {
+  const t = useTheme();
+  const { auditLogData } = useAdmin();
+  const [filter, setFilter] = useState("all");
+  const actionTypes = [
+    "all",
+    "vendor",
+    "user",
+    "request",
+    "notification",
+    "config",
+  ];
+  const filtered = auditLogData.filter(
+    (a) => filter === "all" || a.entityType === filter,
+  );
+  const colorMap = {
+    vendor_created: "#22c55e",
+    vendor_kyc_approved: "#22c55e",
+    vendor_kyc_rejected: "#ef4444",
+    vendor_suspended: "#ef4444",
+    vendor_deleted: "#ef4444",
+    user_blocked: "#ef4444",
+    user_unbanned: "#22c55e",
+    request_cancelled: "#f59e0b",
+    broadcast_sent: "#3b82f6",
+    config_changed: "#a855f7",
+  };
+
+  return (
+    <>
+      <div style={{ marginBottom: 11 }}>
+        {actionTypes.map((f) => (
+          <Chip
+            key={f}
+            label={f.charAt(0).toUpperCase() + f.slice(1)}
+            active={filter === f}
+            onClick={() => setFilter(f)}
+          />
+        ))}
+      </div>
+      <Card>
+        <CT action="Export CSV">Admin Action History</CT>
+        {filtered.length === 0 ? (
+          <Empty icon="📜" text="No audit records" />
+        ) : (
+          filtered.map((a, i) => {
+            const color = colorMap[a.action] || "#6b7280";
+            return (
+              <div
+                key={a.id || i}
+                style={{
+                  display: "flex",
+                  gap: 9,
+                  alignItems: "flex-start",
+                  padding: "9px 0",
+                  borderBottom: `1px solid ${t.border}`,
+                }}
+              >
+                <div
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: 7,
+                    background: `${color}18`,
+                    color,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 12,
+                    flexShrink: 0,
+                  }}
+                >
+                  ▶
+                </div>
+                <div>
+                  <div
+                    style={{ fontSize: 12, color: t.text1, fontWeight: 500 }}
+                  >
+                    {a.action?.replace(/_/g, " ")} —{" "}
+                    <span style={{ color: t.orange }}>{a.entityId}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: t.muted, marginTop: 2 }}>
+                    By {a.adminName || "Admin"} ·{" "}
+                    {a.timestamp?.toDate?.()?.toLocaleString() || "—"}
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </Card>
+    </>
+  );
+}
+
+function Settings_Page() {
+  const t = useTheme();
+  const { adminUser } = useAdmin();
+  const [tab, setTab] = useState("app");
+  const [config, setConfig] = useState({
+    searchRadius: 10,
+    resultLimit: 20,
+    sosCooldown: 3,
+    helpline: "1122",
+    maintenanceMode: false,
+    aiEnabled: true,
+    selfRegistration: true,
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const unsub = getAppConfig((data) => {
+      if (data) setConfig((p) => ({ ...p, ...data }));
+    });
+    return unsub;
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await saveAppConfig(config);
+      await logAudit("config_changed", "config", "main", config, adminUser);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inp = {
+    background: t.input,
+    border: `1px solid ${t.border}`,
+    borderRadius: 7,
+    padding: "8px 10px",
+    color: t.text1,
+    fontSize: 12,
+    outline: "none",
+    width: "100%",
+  };
+
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        {[
+          ["app", "App Config"],
+          ["zones", "Zones"],
+          ["admins", "Admin Users"],
+        ].map(([k, l]) => (
+          <Btn
+            key={k}
+            variant={tab === k ? "primary" : "ghost"}
+            onClick={() => setTab(k)}
+          >
+            {l}
+          </Btn>
+        ))}
+      </div>
+      {tab === "app" && (
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}
+        >
+          <Card>
+            <CT>App Configuration</CT>
+            {saved && (
+              <div
+                style={{
+                  background: "#dcfce7",
+                  border: "1px solid #bbf7d0",
+                  borderRadius: 8,
+                  padding: "8px 12px",
+                  fontSize: 12,
+                  color: "#16a34a",
+                  marginBottom: 12,
+                }}
+              >
+                ✓ Configuration saved to Firestore!
+              </div>
+            )}
+            <FG label="Vendor Search Radius (km)">
+              <input
+                value={config.searchRadius}
+                onChange={(e) =>
+                  setConfig((p) => ({ ...p, searchRadius: e.target.value }))
+                }
+                type="number"
+                style={inp}
+              />
+            </FG>
+            <FG label="Vendor Result Limit">
+              <input
+                value={config.resultLimit}
+                onChange={(e) =>
+                  setConfig((p) => ({ ...p, resultLimit: e.target.value }))
+                }
+                type="number"
+                style={inp}
+              />
+            </FG>
+            <FG label="SOS Cooldown (seconds)">
+              <input
+                value={config.sosCooldown}
+                onChange={(e) =>
+                  setConfig((p) => ({ ...p, sosCooldown: e.target.value }))
+                }
+                type="number"
+                style={inp}
+              />
+            </FG>
+            <FG label="Emergency Helpline">
+              <input
+                value={config.helpline}
+                onChange={(e) =>
+                  setConfig((p) => ({ ...p, helpline: e.target.value }))
+                }
+                style={inp}
+              />
+            </FG>
+            <div
+              style={{
+                borderTop: `1px solid ${t.border}`,
+                marginTop: 13,
+                paddingTop: 13,
+              }}
+            >
+              {[
+                [
+                  "maintenanceMode",
+                  "Maintenance Mode",
+                  "Shows maintenance screen to all users",
+                ],
+                [
+                  "aiEnabled",
+                  "AI Features (Gemini)",
+                  "Enable/disable Gemini in-app globally",
+                ],
+                [
+                  "selfRegistration",
+                  "Vendor Self-Registration",
+                  "Allow public /register form",
+                ],
+              ].map(([k, n, d]) => (
+                <div
+                  key={k}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: 11,
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: 12, color: t.text1 }}>{n}</div>
+                    <div style={{ fontSize: 10, color: t.muted }}>{d}</div>
+                  </div>
+                  <Tog
+                    checked={!!config[k]}
+                    onChange={() => setConfig((p) => ({ ...p, [k]: !p[k] }))}
+                  />
+                </div>
+              ))}
+            </div>
+            <Btn variant="primary" onClick={handleSave} disabled={saving}>
+              {saving ? "Saving…" : "Save to Firestore"}
+            </Btn>
+          </Card>
+          <Card>
+            <CT>Registration Link</CT>
+            <div
+              style={{
+                background: t.input,
+                border: `1px solid ${t.border}`,
+                borderRadius: 10,
+                padding: 14,
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ fontSize: 11, color: t.muted, marginBottom: 6 }}>
+                PUBLIC VENDOR REGISTRATION URL
+              </div>
+              <div
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  color: t.orange,
+                  wordBreak: "break-all",
+                }}
+              >
+                https://roadassistpro.pk/register
+              </div>
+              <div style={{ fontSize: 11, color: t.muted, marginTop: 8 }}>
+                Share this link with mechanics, tow truck operators, fuel
+                suppliers, etc. Applications go straight to your Vendors → KYC
+                queue.
+              </div>
+            </div>
+            <div
+              style={{
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                borderRadius: 10,
+                padding: 12,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "#16a34a",
+                  marginBottom: 6,
+                }}
+              >
+                Self-registration is{" "}
+                {config.selfRegistration ? "ENABLED" : "DISABLED"}
+              </div>
+              <div style={{ fontSize: 11, color: "#166534" }}>
+                Toggle above to enable/disable the public registration form.
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+      {tab === "zones" && (
+        <Card>
+          <CT>Service Zones — Karachi</CT>
+          {[
+            ["DHA / Clifton", 42, "7.2 min", "verified"],
+            ["Gulshan / Nazimabad", 38, "9.1 min", "verified"],
+            ["PECHS / Saddar", 29, "10.5 min", "pending"],
+            ["Korangi / Landhi", 14, "18.3 min", "rejected"],
+            ["North Karachi", 8, "22.1 min", "rejected"],
+          ].map(([z, v, r, c]) => (
+            <div
+              key={z}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "10px 0",
+                borderBottom: `1px solid ${t.border}`,
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: t.text1 }}>
+                  {z}
+                </div>
+                <div style={{ fontSize: 11, color: t.muted }}>
+                  Avg response: {r}
+                </div>
+              </div>
+              <Badge
+                status={c}
+                text={
+                  c === "verified" ? "High" : c === "pending" ? "Medium" : "Low"
+                }
+              />
+              <span style={{ color: t.orange, fontWeight: 600, fontSize: 13 }}>
+                {v} vendors
+              </span>
+              <Btn style={{ padding: "3px 8px", fontSize: 10 }}>Manage</Btn>
+            </div>
+          ))}
+        </Card>
+      )}
+      {tab === "admins" && (
+        <Card>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 14,
+            }}
+          >
+            <CT>Admin Users</CT>
+            <Btn variant="primary" style={{ fontSize: 11 }}>
+              + Invite Admin
+            </Btn>
+          </div>
+          <Tbl
+            headers={[
+              "Admin",
+              "Email",
+              "Role",
+              "Last Login",
+              "Status",
+              "Actions",
+            ]}
+            rows={[
+              [
+                "SA",
+                "Super Admin",
+                "admin@roadassist.pk",
+                "superadmin",
+                "Just now",
+                "active",
+                "#e8630a",
+              ],
+              [
+                "OM",
+                "Ops Manager",
+                "ops@roadassist.pk",
+                "manager",
+                "2h ago",
+                "active",
+                "#3b82f6",
+              ],
+              [
+                "SU",
+                "Support Agent",
+                "support@roadassist.pk",
+                "support",
+                "1d ago",
+                "active",
+                "#22c55e",
+              ],
+            ].map(([av, n, e, r, l, s, c]) => (
+              <tr key={n}>
+                <TD>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 7 }}
+                  >
+                    <Av initials={av} color={c} size={24} />
+                    <span style={{ fontSize: 12 }}>{n}</span>
+                  </div>
+                </TD>
+                <TD style={{ fontSize: 11, color: t.muted }}>{e}</TD>
+                <TD>
+                  <Badge status={r} />
+                </TD>
+                <TD style={{ fontSize: 10, color: t.muted }}>{l}</TD>
+                <TD>
+                  <Badge status={s} />
+                </TD>
+                <TD>
+                  <Btn
+                    variant="danger"
+                    style={{ padding: "3px 8px", fontSize: 10 }}
+                  >
+                    Deactivate
+                  </Btn>
+                </TD>
+              </tr>
+            ))}
+          />
+        </Card>
+      )}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  NAV
+// ─────────────────────────────────────────────────────────────────
+const NAV = [
+  {
+    section: "Main",
+    items: [
+      { key: "dashboard", label: "Dashboard", icon: "▦", comp: Dashboard },
+      { key: "users", label: "Users", icon: "◉", comp: Users },
+      {
+        key: "vendors",
+        label: "Vendors",
+        icon: "⊛",
+        comp: Vendors,
+        badgeKey: "pendingKyc",
+        bc: "#ca8a04",
+      },
+      { key: "requests", label: "Requests", icon: "≡", comp: Requests },
+    ],
+  },
+  {
+    section: "Emergency",
+    items: [
+      {
+        key: "sos",
+        label: "SOS Alerts",
+        icon: "!",
+        comp: SOS_Page,
+        badgeKey: "activeSos",
+        bc: "#dc2626",
+      },
+    ],
+  },
+  {
+    section: "Operations",
+    items: [
+      { key: "finance", label: "Finance", icon: "₨", comp: Finance },
+      {
+        key: "reviews",
+        label: "Reviews",
+        icon: "★",
+        comp: Reviews_Page,
+        badgeKey: "flaggedReviews",
+        bc: "#e8630a",
+      },
+    ],
+  },
+  {
+    section: "System",
+    items: [
+      { key: "audit", label: "Audit Log", icon: "◷", comp: AuditLog_Page },
+      { key: "settings", label: "Settings", icon: "⚙", comp: Settings_Page },
+    ],
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────
+//  LOGIN SCREEN
+// ─────────────────────────────────────────────────────────────────
+function Login({ onLogin }) {
+  const t = useTheme();
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setErr("");
+    setLoading(true);
+    try {
+      const cred = await adminLogin(email, pass);
+      onLogin(cred.user);
+    } catch (e) {
+      setErr(
+        e.code === "auth/wrong-password" || e.code === "auth/user-not-found"
+          ? "Invalid email or password."
+          : e.message,
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: t.bg,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        style={{
+          background: t.card,
+          border: `1px solid ${t.border}`,
+          borderRadius: 20,
+          padding: 36,
+          width: 380,
+          maxWidth: "100%",
+        }}
+      >
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div
+            style={{
+              width: 44,
+              height: 44,
+              background: t.orange,
+              borderRadius: 12,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontWeight: 900,
+              fontSize: 22,
+              color: "#fff",
+              margin: "0 auto 12px",
+            }}
+          >
+            R
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: t.white }}>
+            RoadAssist Pro
+          </div>
+          <div style={{ fontSize: 12, color: t.muted, marginTop: 3 }}>
+            Admin Panel Login
+          </div>
+        </div>
+        {err && (
+          <div
+            style={{
+              background: "#fef2f2",
+              border: "1px solid #fecaca",
+              borderRadius: 8,
+              padding: "8px 12px",
+              fontSize: 12,
+              color: "#dc2626",
+              marginBottom: 14,
+            }}
+          >
+            {err}
+          </div>
+        )}
+        <form onSubmit={handleLogin}>
+          <FG label="Email">
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              placeholder="admin@roadassist.pk"
+              required
+              style={{
+                background: t.input,
+                border: `1px solid ${t.border}`,
+                borderRadius: 7,
+                padding: "9px 12px",
+                color: t.text1,
+                fontSize: 13,
+                outline: "none",
+                width: "100%",
+              }}
+            />
+          </FG>
+          <FG label="Password">
+            <input
+              value={pass}
+              onChange={(e) => setPass(e.target.value)}
+              type="password"
+              placeholder="••••••••"
+              required
+              style={{
+                background: t.input,
+                border: `1px solid ${t.border}`,
+                borderRadius: 7,
+                padding: "9px 12px",
+                color: t.text1,
+                fontSize: 13,
+                outline: "none",
+                width: "100%",
+              }}
+            />
+          </FG>
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              width: "100%",
+              padding: "11px",
+              background: t.orange,
+              color: "#fff",
+              border: "none",
+              borderRadius: 9,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: loading ? "wait" : "pointer",
+              marginTop: 4,
+            }}
+          >
+            {loading ? "Signing in…" : "Sign In"}
+          </button>
+        </form>
+        <div
+          style={{
+            textAlign: "center",
+            marginTop: 16,
+            fontSize: 11,
+            color: t.muted,
+          }}
+        >
+          Need an account? Contact your super admin.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  ROOT APP
+// ─────────────────────────────────────────────────────────────────
+export default function AdminPanel() {
+  const [isDark, setIsDark] = useState(true);
+  const [page, setPage] = useState("dashboard");
+  const [adminUser, setAdminUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [notifOpen, setNotifOpen] = useState(false);
+
+  // Firebase data
+  const [vendors, setVendors] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [sos, setSos] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [notifications, setNotifs] = useState([]);
+  const [auditLogData, setAudit] = useState([]);
+
+  // FCM foreground
+  const [fcmToast, setFcmToast] = useState(null);
+
+  const t = isDark ? DARK : LIGHT;
+
+  // Auth listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setAdminUser(user || null);
+      setAuthLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // Firestore listeners — only when logged in
+  useEffect(() => {
+    if (!adminUser) return;
+    const u1 = getVendors(setVendors);
+    const u2 = getUsers(setUsers);
+    const u3 = getRequests(setRequests);
+    const u4 = getSOS(setSos);
+    const u5 = getReviews(setReviews);
+    const u6 = getNotifications(setNotifs);
+    const u7 = getAuditLog(setAudit);
+    return () => {
+      u1();
+      u2();
+      u3();
+      u4();
+      u5();
+      u6();
+      u7();
+    };
+  }, [adminUser]);
+
+  // FCM foreground messages
+  useEffect(() => {
+    const unsub = onFCMMessage((payload) => {
+      setFcmToast(payload.notification);
+      setTimeout(() => setFcmToast(null), 4000);
+    });
+  }, []);
+
+  const allItems = NAV.flatMap((s) => s.items);
+  const current = allItems.find((i) => i.key === page);
+  const PageComp = current?.comp || Dashboard;
+
+  // Badge counts
+  const badges = {
+    pendingKyc: vendors.filter((v) => v.kyc === "pending").length,
+    activeSos: sos.filter((s) => !s.resolved).length,
+    flaggedReviews: reviews.filter((r) => r.status === "flagged").length,
+    unreadNotifs: notifications.filter((n) => !n.read).length,
+  };
+
+  const adminCtx = {
+    vendors,
+    users,
+    requests,
+    sos,
+    reviews,
+    notifications,
+    auditLogData,
+    adminUser,
+  };
+
+  if (authLoading)
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: t.bg,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Spinner />
+      </div>
+    );
+  if (!adminUser)
+    return (
+      <ThemeCtx.Provider value={t}>
+        <Login onLogin={setAdminUser} />
+      </ThemeCtx.Provider>
+    );
+
+  return (
+    <ThemeCtx.Provider value={t}>
+      <AdminCtx.Provider value={adminCtx}>
+        <div
+          style={{
+            display: "flex",
+            height: "100vh",
+            background: t.bg,
+            overflow: "hidden",
+            fontFamily: "'Segoe UI',system-ui,sans-serif",
+            transition: "background .25s",
+          }}
+        >
+          {/* FCM toast */}
+          {fcmToast && (
+            <div
+              style={{
+                position: "fixed",
+                bottom: 20,
+                right: 20,
+                background: t.orange,
+                color: "#fff",
+                borderRadius: 12,
+                padding: "12px 18px",
+                zIndex: 2000,
+                fontSize: 13,
+                fontWeight: 600,
+                boxShadow: "0 4px 20px #0004",
+                maxWidth: 300,
+              }}
+            >
+              🔔 {fcmToast.title}: {fcmToast.body}
+            </div>
+          )}
+
+          {/* Notification panel */}
+          <NotificationPanel
+            open={notifOpen}
+            onClose={() => setNotifOpen(false)}
+          />
+
+          {/* Sidebar */}
+          <div
+            style={{
+              width: 215,
+              minWidth: 215,
+              background: t.sidebar,
+              borderRight: `1px solid ${t.border}`,
+              display: "flex",
+              flexDirection: "column",
+              overflowY: "auto",
+              transition: "background .25s",
+            }}
+          >
+            <div
+              style={{
+                padding: "18px 14px 14px",
+                borderBottom: `1px solid ${t.border}`,
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  width: 32,
+                  height: 32,
+                  background: t.orange,
+                  borderRadius: 8,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontWeight: 900,
+                  fontSize: 16,
+                  color: "#fff",
+                  flexShrink: 0,
+                }}
+              >
+                R
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: t.white }}>
+                  RoadAssist Pro
+                </div>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: t.muted,
+                    letterSpacing: 0.8,
+                    textTransform: "uppercase",
+                    marginTop: 1,
+                  }}
+                >
+                  Admin Panel
+                </div>
+              </div>
+            </div>
+
+            {NAV.map((section) => (
+              <div key={section.section} style={{ padding: "12px 8px 4px" }}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: t.muted,
+                    letterSpacing: 1,
+                    textTransform: "uppercase",
+                    padding: "0 6px",
+                    marginBottom: 6,
+                    fontWeight: 600,
+                  }}
+                >
+                  {section.section}
+                </div>
+                {section.items.map((item) => {
+                  const active = page === item.key;
+                  const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
+                  return (
+                    <div
+                      key={item.key}
+                      onClick={() => setPage(item.key)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 9,
+                        padding: "8px 9px",
+                        borderRadius: 8,
+                        cursor: "pointer",
+                        color: active ? t.orange : t.text2,
+                        background: active ? t.activeNavBg : "transparent",
+                        fontSize: 12.5,
+                        marginBottom: 2,
+                        borderLeft: `3px solid ${active ? t.orange : "transparent"}`,
+                        transition: "all .12s",
+                      }}
+                    >
+                      <span
+                        style={{ width: 16, textAlign: "center", fontSize: 13 }}
+                      >
+                        {item.icon}
+                      </span>
+                      <span style={{ flex: 1 }}>{item.label}</span>
+                      {badgeCount > 0 && (
+                        <span
+                          style={{
+                            padding: "1px 6px",
+                            borderRadius: 10,
+                            fontSize: 9,
+                            fontWeight: 700,
+                            background: item.bc,
+                            color: "#fff",
+                          }}
+                        >
+                          {badgeCount}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+
+            <div
+              style={{
+                marginTop: "auto",
+                padding: 10,
+                borderTop: `1px solid ${t.border}`,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: t.hover,
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                }}
+              >
+                <div
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: "50%",
+                    background: t.orange,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: "#fff",
+                  }}
+                >
+                  {(adminUser.email || "A").slice(0, 2).toUpperCase()}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: t.text1,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {adminUser.email}
+                  </div>
+                  <div style={{ fontSize: 9, color: t.muted }}>
+                    admin · online
+                  </div>
+                </div>
+                <button
+                  onClick={() => adminLogout()}
+                  title="Sign out"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: t.muted,
+                    cursor: "pointer",
+                    fontSize: 14,
+                  }}
+                >
+                  ↪
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Main */}
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              minWidth: 0,
+            }}
+          >
+            {/* Topbar */}
+            <div
+              style={{
+                height: 50,
+                background: t.sidebar,
+                borderBottom: `1px solid ${t.border}`,
+                display: "flex",
+                alignItems: "center",
+                padding: "0 18px",
+                gap: 10,
+                flexShrink: 0,
+                transition: "background .25s",
+              }}
+            >
+              <div
+                style={{
+                  flex: 1,
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: t.white,
+                }}
+              >
+                {current?.label}
+              </div>
+              <span
+                style={{
+                  background: `${t.orange}1a`,
+                  border: `1px solid ${t.orange}33`,
+                  color: t.orange,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  padding: "3px 9px",
+                  borderRadius: 20,
+                }}
+              >
+                ● Live
+              </span>
+
+              {/* Notification bell */}
+              <button
+                onClick={() => setNotifOpen(true)}
+                style={{
+                  position: "relative",
+                  background: t.hover,
+                  border: `1px solid ${t.border}`,
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  fontSize: 15,
+                  color: t.text2,
+                  transition: "all .15s",
+                }}
+              >
+                🔔
+                {badges.unreadNotifs > 0 && (
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: -4,
+                      right: -4,
+                      width: 16,
+                      height: 16,
+                      borderRadius: "50%",
+                      background: "#ef4444",
+                      color: "#fff",
+                      fontSize: 9,
+                      fontWeight: 700,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {badges.unreadNotifs}
+                  </span>
+                )}
+              </button>
+
+              {/* Light/Dark toggle */}
+              <button
+                onClick={() => setIsDark((d) => !d)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  background: t.hover,
+                  border: `1px solid ${t.border}`,
+                  borderRadius: 20,
+                  padding: "5px 13px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: t.text1,
+                  transition: "all .2s",
+                }}
+              >
+                {isDark ? "☀ Light" : "☽ Dark"}
+              </button>
+
+              <button
+                style={{
+                  background: t.hover,
+                  border: `1px solid ${t.border}`,
+                  color: t.text2,
+                  padding: "5px 11px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                Export
+              </button>
+              <button
+                style={{
+                  background: "#dc26261a",
+                  border: "1px solid #dc262633",
+                  color: "#ef4444",
+                  padding: "5px 12px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                ⚠ SOS · {badges.activeSos} Active
+              </button>
+            </div>
+
+            {/* Page */}
+            <div style={{ flex: 1, overflowY: "auto", padding: 18 }}>
+              <div style={{ marginBottom: 16 }}>
+                <div
+                  style={{
+                    fontSize: 20,
+                    fontWeight: 700,
+                    color: t.white,
+                    letterSpacing: -0.4,
+                  }}
+                >
+                  {current?.label}
+                </div>
+              </div>
+              <PageComp />
+            </div>
+          </div>
+        </div>
+        <style>{`*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:${t.scrollThumb};border-radius:3px}@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </AdminCtx.Provider>
+    </ThemeCtx.Provider>
+  );
+}
