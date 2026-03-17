@@ -58,11 +58,12 @@ import {
   onFCMMessage,
 } from "./firebase";
 import { onAuthStateChanged } from "firebase/auth";
+import { getDoc, doc } from "firebase/firestore";
 
 // ─────────────────────────────────────────────────────────────────
 //  THEME
 // ─────────────────────────────────────────────────────────────────
-const DARK = {
+const DARK = (primary = "#F97316") => ({
   mode: "dark",
   bg: "#0d0f18",
   sidebar: "#10121c",
@@ -74,35 +75,35 @@ const DARK = {
   text2: "#6a7090",
   text1: "#c0c4d4",
   white: "#e2e4ee",
-  orange: "#e8630a",
+  orange: primary,
   ttBg: "#1a1d2a",
   ttBdr: "#1c1f2e",
   rowAlt: "#0d0f18",
   thColor: "#2e3450",
   scrollThumb: "#252837",
   activeNavBg: "#1a1d2e",
-};
-const LIGHT = {
+});
+const LIGHT = (primary = "#F97316") => ({
   mode: "light",
-  bg: "#f0f2f7",
-  sidebar: "#ffffff",
-  card: "#ffffff",
-  border: "#e2e6ef",
-  hover: "#f4f6fb",
-  input: "#f4f6fb",
-  muted: "#9aa0b8",
-  text2: "#6b7280",
-  text1: "#374151",
+  bg: "#F5F5F5",
+  sidebar: "#FFFFFF",
+  card: "#FFFFFF",
+  border: "#E5E7EB",
+  hover: "#F9FAFB",
+  input: "#F9FAFB",
+  muted: "#9CA3AF",
+  text2: "#6B7280",
+  text1: "#111827",
   white: "#111827",
-  orange: "#e8630a",
-  ttBg: "#ffffff",
-  ttBdr: "#e2e6ef",
-  rowAlt: "#f8f9fb",
-  thColor: "#9aa0b8",
-  scrollThumb: "#d1d5db",
-  activeNavBg: "#fff4ee",
-};
-const ThemeCtx = createContext(DARK);
+  orange: primary,
+  ttBg: "#FFFFFF",
+  ttBdr: "#E5E7EB",
+  rowAlt: "#F9FAFB",
+  thColor: "#9CA3AF",
+  scrollThumb: "#D1D5DB",
+  activeNavBg: primary + "22",
+});
+const ThemeCtx = createContext(LIGHT());
 const useTheme = () => useContext(ThemeCtx);
 const AdminCtx = createContext({});
 const useAdmin = () => useContext(AdminCtx);
@@ -2934,6 +2935,13 @@ function Login({ onLogin }) {
     setLoading(true);
     try {
       const cred = await adminLogin(email, pass);
+      // Verify this user exists in admin_users collection
+      const snap = await getDoc(doc(db, "admin_users", cred.user.uid));
+      if (!snap.exists()) {
+        await adminLogout();
+        setErr("Access denied. You are not an admin.");
+        return;
+      }
       onLogin(cred.user);
     } catch (e) {
       setErr(
@@ -3084,7 +3092,12 @@ function Login({ onLogin }) {
 //  ROOT APP
 // ─────────────────────────────────────────────────────────────────
 export default function AdminPanel() {
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(
+    () => localStorage.getItem("ra_dark") === "true",
+  );
+  const [primaryColor, setPrimaryColor] = useState(
+    () => localStorage.getItem("ra_primary") || "#F97316",
+  );
   const [page, setPage] = useState("dashboard");
   const [adminUser, setAdminUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -3102,7 +3115,10 @@ export default function AdminPanel() {
   // FCM foreground
   const [fcmToast, setFcmToast] = useState(null);
 
-  const t = isDark ? DARK : LIGHT;
+  const t = isDark ? DARK(primaryColor) : LIGHT(primaryColor);
+
+  useEffect(() => { localStorage.setItem("ra_dark", isDark); }, [isDark]);
+  useEffect(() => { localStorage.setItem("ra_primary", primaryColor); }, [primaryColor]);
 
   // Auth listener
   useEffect(() => {
@@ -3500,6 +3516,42 @@ export default function AdminPanel() {
                   </span>
                 )}
               </button>
+
+              {/* Primary color picker */}
+              <label
+                title="Pick primary color"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  background: t.hover,
+                  border: `1px solid ${t.border}`,
+                  borderRadius: 20,
+                  padding: "5px 13px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: t.text1,
+                }}
+              >
+                <span
+                  style={{
+                    width: 13,
+                    height: 13,
+                    borderRadius: "50%",
+                    background: primaryColor,
+                    border: `2px solid ${t.border}`,
+                    display: "inline-block",
+                  }}
+                />
+                Color
+                <input
+                  type="color"
+                  value={primaryColor}
+                  onChange={(e) => setPrimaryColor(e.target.value)}
+                  style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}
+                />
+              </label>
 
               {/* Light/Dark toggle */}
               <button
