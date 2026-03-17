@@ -1261,23 +1261,21 @@ function Dashboard() {
         <Card>
           <CT>Category Split</CT>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <ResponsiveContainer width={140} height={140}>
-              <PieChart>
-                <Pie
-                  data={getCatData(t.orange)}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={40}
-                  outerRadius={65}
-                  dataKey="value"
-                  stroke="none"
-                >
-                  {getCatData(t.orange).map((e, i) => (
-                    <Cell key={i} fill={e.color} />
-                  ))}
-                </Pie>
-              </PieChart>
-            </ResponsiveContainer>
+            <PieChart width={140} height={140}>
+              <Pie
+                data={getCatData(t.orange)}
+                cx={70}
+                cy={70}
+                innerRadius={40}
+                outerRadius={65}
+                dataKey="value"
+                stroke="none"
+              >
+                {getCatData(t.orange).map((e, i) => (
+                  <Cell key={i} fill={e.color} />
+                ))}
+              </Pie>
+            </PieChart>
             <div>
               {getCatData(t.orange).map((c) => (
                 <div
