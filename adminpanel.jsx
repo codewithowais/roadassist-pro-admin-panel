@@ -3189,17 +3189,19 @@ export default function AdminPanel() {
 
   if (authLoading)
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: t.bg,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <Spinner />
-      </div>
+      <ThemeCtx.Provider value={t}>
+        <div
+          style={{
+            minHeight: "100vh",
+            background: t.bg,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Spinner />
+        </div>
+      </ThemeCtx.Provider>
     );
   if (!adminUser)
     return (
