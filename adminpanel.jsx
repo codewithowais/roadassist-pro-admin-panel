@@ -120,32 +120,32 @@ const chartData = [
   { day: "Sat", requests: 112, revenue: 22400 },
   { day: "Sun", requests: 76, revenue: 15200 },
 ];
-const catData = [
-  { name: "Mechanic", value: 38, color: "#e8630a" },
+const getCatData = (primary) => [
+  { name: "Mechanic", value: 38, color: primary },
   { name: "Fuel", value: 22, color: "#3b82f6" },
   { name: "Tyre", value: 18, color: "#22c55e" },
   { name: "Battery", value: 12, color: "#f59e0b" },
   { name: "Tow", value: 7, color: "#a855f7" },
   { name: "Accident", value: 3, color: "#ef4444" },
 ];
-const CAT_COLORS = {
-  Mechanic: "#e8630a",
+const getCatColors = (primary) => ({
+  Mechanic: primary,
   "Fuel Delivery": "#3b82f6",
   Fuel: "#3b82f6",
   "Tyre Repair": "#22c55e",
   Battery: "#f59e0b",
   "Tow Truck": "#a855f7",
   "Accident Recovery": "#ef4444",
-};
-const BADGE_PALETTE = {
+});
+const getBadgePalette = (primary) => ({
   green: { bg: "#22c55e18", color: "#16a34a", border: "#22c55e33" },
   red: { bg: "#ef444418", color: "#dc2626", border: "#ef444433" },
-  orange: { bg: "#e8630a18", color: "#e8630a", border: "#e8630a33" },
+  orange: { bg: primary + "18", color: primary, border: primary + "33" },
   blue: { bg: "#3b82f618", color: "#2563eb", border: "#3b82f633" },
   yellow: { bg: "#f59e0b18", color: "#d97706", border: "#f59e0b33" },
   gray: { bg: "#88888818", color: "#6b7280", border: "#88888833" },
   purple: { bg: "#a855f718", color: "#7c3aed", border: "#a855f733" },
-};
+});
 const BADGE_MAP = {
   completed: "green",
   in_progress: "orange",
@@ -192,7 +192,9 @@ const CITIES = [
 //  ATOMS
 // ─────────────────────────────────────────────────────────────────
 function Badge({ status, text }) {
-  const s = BADGE_PALETTE[BADGE_MAP[status]] || BADGE_PALETTE.gray;
+  const t = useTheme();
+  const bp = getBadgePalette(t.orange);
+  const s = bp[BADGE_MAP[status]] || bp.gray;
   return (
     <span
       style={{
@@ -212,14 +214,16 @@ function Badge({ status, text }) {
     </span>
   );
 }
-function Av({ initials, color = "#e8630a", size = 26 }) {
+function Av({ initials, color, size = 26 }) {
+  const t = useTheme();
+  const bg = color || t.orange;
   return (
     <div
       style={{
         width: size,
         height: size,
         borderRadius: "50%",
-        background: color,
+        background: bg,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -234,6 +238,7 @@ function Av({ initials, color = "#e8630a", size = 26 }) {
   );
 }
 function CatDot({ cat }) {
+  const t = useTheme();
   return (
     <span
       style={{ display: "inline-flex", alignItems: "center", fontSize: 11 }}
@@ -243,7 +248,7 @@ function CatDot({ cat }) {
           width: 7,
           height: 7,
           borderRadius: "50%",
-          background: CAT_COLORS[cat] || "#888",
+          background: getCatColors(t.orange)[cat] || "#888",
           display: "inline-block",
           marginRight: 5,
         }}
@@ -627,6 +632,7 @@ function Sel({ value, onChange, children }) {
   );
 }
 function Spinner() {
+  const t = useTheme();
   return (
     <div
       style={{
@@ -640,8 +646,8 @@ function Spinner() {
         style={{
           width: 28,
           height: 28,
-          border: "3px solid #e8630a33",
-          borderTop: "3px solid #e8630a",
+          border: `3px solid ${t.orange}33`,
+          borderTop: `3px solid ${t.orange}`,
           borderRadius: "50%",
           animation: "spin .7s linear infinite",
         }}
@@ -1258,7 +1264,7 @@ function Dashboard() {
             <ResponsiveContainer width={140} height={140}>
               <PieChart>
                 <Pie
-                  data={catData}
+                  data={getCatData(t.orange)}
                   cx="50%"
                   cy="50%"
                   innerRadius={40}
@@ -1266,14 +1272,14 @@ function Dashboard() {
                   dataKey="value"
                   stroke="none"
                 >
-                  {catData.map((e, i) => (
+                  {getCatData(t.orange).map((e, i) => (
                     <Cell key={i} fill={e.color} />
                   ))}
                 </Pie>
               </PieChart>
             </ResponsiveContainer>
             <div>
-              {catData.map((c) => (
+              {getCatData(t.orange).map((c) => (
                 <div
                   key={c.name}
                   style={{
@@ -1431,7 +1437,7 @@ function Dashboard() {
               </span>
               <Av
                 initials={(v.name || "V").slice(0, 2).toUpperCase()}
-                color={CAT_COLORS[v.category] || t.orange}
+                color={getCatColors(t.orange)[v.category] || t.orange}
                 size={24}
               />
               <div style={{ flex: 1 }}>
@@ -1756,7 +1762,7 @@ function Vendors() {
                   >
                     <Av
                       initials={(v.name || "V").slice(0, 2).toUpperCase()}
-                      color={CAT_COLORS[v.category] || t.orange}
+                      color={getCatColors(t.orange)[v.category] || t.orange}
                       size={24}
                     />
                     {v.name}
@@ -2808,7 +2814,7 @@ function Settings_Page() {
                 "superadmin",
                 "Just now",
                 "active",
-                "#e8630a",
+                null,
               ],
               [
                 "OM",
@@ -3350,7 +3356,7 @@ export default function AdminPanel() {
                             borderRadius: 10,
                             fontSize: 9,
                             fontWeight: 700,
-                            background: item.bc,
+                            background: item.bc ? t.orange : undefined,
                             color: "#fff",
                           }}
                         >
