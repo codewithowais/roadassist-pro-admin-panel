@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Only authenticated admin users can access everything
+    function isAdmin() {
+      return request.auth != null &&
+             exists(/databases/$(database)/documents/admin_users/$(request.auth.uid));
+    }
+
+    // Admin-only collections
+    match /vendors/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /users/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /service_requests/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /sos_hotspots/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /reviews/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /notifications/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /audit_log/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /app_config/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // admin_users — self-read only (needed for the login guard check)
+    // write is admin-only (to prevent self-escalation)
+    match /admin_users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if isAdmin();
+    }
+  }
+}
