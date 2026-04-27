@@ -1938,6 +1938,8 @@ function AddUserModal({ onClose, existing }) {
     phone: existing?.phone || "",
     city: existing?.city || "",
     status: existing?.status || "active",
+    password: "",
+    confirmPassword: "",
   }));
   const [errs, setErrs] = useState({});
   const [loading, setLoading] = useState(false);
@@ -1955,8 +1957,16 @@ function AddUserModal({ onClose, existing }) {
       V.minLength(2, "Too short"),
       V.maxLength(120, "Too long"),
     );
-    e.phone = V.pakPhone(form.phone);
-    e.email = V.email(form.email);
+    e.phone = V.pakPhone(form.phone); // required for everyone
+    if (!editing) {
+      e.email = V.emailRequired(form.email);
+      if (!form.password || form.password.length < 6)
+        e.password = "Password must be at least 6 characters";
+      if (form.password !== form.confirmPassword)
+        e.confirmPassword = "Passwords don't match";
+    } else {
+      e.email = V.email(form.email);
+    }
     if (!form.city) e.city = "Select a city";
     for (const k of Object.keys(e)) if (!e[k]) delete e[k];
     setErrs(e);
@@ -1972,7 +1982,8 @@ function AddUserModal({ onClose, existing }) {
     setLoading(true);
     try {
       if (editing) {
-        await updateUser(existing.id, form);
+        const { password, confirmPassword, ...rest } = form;
+        await updateUser(existing.id, rest);
         await logAudit(
           "user_updated",
           "user",
@@ -1981,11 +1992,47 @@ function AddUserModal({ onClose, existing }) {
           adminUser,
         );
       } else {
-        const ref = await addUser(form);
+        // 1. Create the Firebase Auth user via the admin-only Vercel route
+        //    so the user can later sign in to the mobile app.
+        const idToken = await adminUser?.getIdToken?.();
+        const res = await fetch("/api/users/create", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            email: form.email.trim(),
+            password: form.password,
+            name: form.name.trim() || null,
+            phone: form.phone || null,
+          }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(
+            j.error === "email_already_exists"
+              ? "A user with that email already exists."
+              : j.error === "phone_already_exists"
+              ? "A user with that phone number already exists."
+              : j.error || `HTTP ${res.status}`,
+          );
+        }
+        const { uid } = await res.json();
+        // 2. Mirror as a Firestore user doc keyed by uid so the mobile app
+        //    profile lookup works. addUser keeps server-default fields.
+        await addUser({
+          name: form.name.trim(),
+          email: form.email.trim(),
+          phone: form.phone,
+          city: form.city,
+          status: form.status,
+          uid,
+        });
         await logAudit(
           "user_created",
           "user",
-          ref.id,
+          uid,
           { entityName: form.name },
           adminUser,
         );
@@ -2087,7 +2134,7 @@ function AddUserModal({ onClose, existing }) {
                 invalid={!!errs.phone}
               />
             </FG>
-            <FG label="Email" error={errs.email}>
+            <FG label={editing ? "Email" : "Email *"} error={errs.email}>
               <Inp
                 value={form.email}
                 onChange={(e) => set("email", e.target.value)}
@@ -2112,6 +2159,30 @@ function AddUserModal({ onClose, existing }) {
                 ))}
               </Sel>
             </FG>
+            {!editing && (
+              <>
+                <FG label="Password *" error={errs.password}>
+                  <Inp
+                    value={form.password}
+                    onChange={(e) => set("password", e.target.value)}
+                    placeholder="At least 6 characters"
+                    type="password"
+                    autoComplete="new-password"
+                    invalid={!!errs.password}
+                  />
+                </FG>
+                <FG label="Confirm Password *" error={errs.confirmPassword}>
+                  <Inp
+                    value={form.confirmPassword}
+                    onChange={(e) => set("confirmPassword", e.target.value)}
+                    placeholder="Re-type password"
+                    type="password"
+                    autoComplete="new-password"
+                    invalid={!!errs.confirmPassword}
+                  />
+                </FG>
+              </>
+            )}
             <FG label="Status">
               <Sel
                 value={form.status}

@@ -6,7 +6,11 @@
 //  Admin sees it in the KYC queue and approves/rejects.
 // ─────────────────────────────────────────────────────────────────
 import { useState, useRef } from "react";
-import { submitVendorApplication, uploadFile } from "./firebase";
+import { submitVendorApplication, uploadFile, auth } from "./firebase";
+import {
+  createUserWithEmailAndPassword,
+  signOut as fbSignOut,
+} from "firebase/auth";
 import { v as V, check } from "./validators";
 
 // Stable per-form-instance id used as the R2 path prefix for this
@@ -85,6 +89,8 @@ export default function VendorRegister() {
     phone: "",
     whatsapp: "",
     email: "",
+    password: "",
+    confirmPassword: "",
     city: "",
     area: "",
     address: "",
@@ -128,7 +134,13 @@ export default function VendorRegister() {
     if (step === 2) {
       e.phone = V.pakPhone(form.phone);
       e.whatsapp = V.pakPhoneOptional(form.whatsapp);
-      e.email = V.email(form.email);
+      // Email + password are now required so the vendor can sign in to
+      // the mobile app once an admin approves their KYC.
+      e.email = V.emailRequired(form.email);
+      if (!form.password || form.password.length < 6)
+        e.password = "Password must be at least 6 characters";
+      if (form.password !== form.confirmPassword)
+        e.confirmPassword = "Passwords don't match";
       if (!form.city) e.city = "City is required";
       e.address = check(
         form.address,
@@ -170,9 +182,46 @@ export default function VendorRegister() {
     if (!validate()) return;
     setLoading(true);
     try {
+      // 1. Create the Firebase Auth account so the vendor can later log
+      //    in to the mobile app once an admin approves their KYC.
+      let authUid = null;
+      try {
+        const cred = await createUserWithEmailAndPassword(
+          auth,
+          form.email.trim(),
+          form.password,
+        );
+        authUid = cred.user.uid;
+        // Sign out immediately so /register stays an unauthenticated page.
+        // The vendor's account exists in Firebase Auth either way.
+        await fbSignOut(auth).catch(() => {});
+      } catch (authErr) {
+        if (authErr.code === "auth/email-already-in-use") {
+          setErrors((p) => ({
+            ...p,
+            email:
+              "An account with that email already exists. Use a different email or contact support.",
+          }));
+          setLoading(false);
+          return;
+        }
+        if (authErr.code === "auth/weak-password") {
+          setErrors((p) => ({
+            ...p,
+            password: "Password is too weak. Use at least 6 characters.",
+          }));
+          setLoading(false);
+          return;
+        }
+        throw authErr;
+      }
+
+      // 2. Persist the vendor application doc with the auth uid linked.
+      const { password, confirmPassword, ...rest } = form;
       await submitVendorApplication({
-        ...form,
+        ...rest,
         applicationId,
+        authUid,
         lat: parseFloat(form.lat) || 24.8607,
         lng: parseFloat(form.lng) || 67.0011,
         documents: {
@@ -609,7 +658,9 @@ export default function VendorRegister() {
                 />
               </div>
               <div>
-                <label style={labelStyle}>Email (optional)</label>
+                <label style={labelStyle}>
+                  Email * — used for login after approval
+                </label>
                 <input
                   value={form.email}
                   onChange={(e) => set("email", e.target.value)}
@@ -624,6 +675,40 @@ export default function VendorRegister() {
                   }}
                 />
                 {errors.email && <p style={errStyle}>{errors.email}</p>}
+              </div>
+              <div>
+                <label style={labelStyle}>Password *</label>
+                <input
+                  value={form.password}
+                  onChange={(e) => set("password", e.target.value)}
+                  placeholder="At least 6 characters"
+                  type="password"
+                  autoComplete="new-password"
+                  maxLength={64}
+                  style={{
+                    ...inputStyle,
+                    borderColor: errors.password ? "#dc2626" : undefined,
+                  }}
+                />
+                {errors.password && <p style={errStyle}>{errors.password}</p>}
+              </div>
+              <div>
+                <label style={labelStyle}>Confirm Password *</label>
+                <input
+                  value={form.confirmPassword}
+                  onChange={(e) => set("confirmPassword", e.target.value)}
+                  placeholder="Re-type password"
+                  type="password"
+                  autoComplete="new-password"
+                  maxLength={64}
+                  style={{
+                    ...inputStyle,
+                    borderColor: errors.confirmPassword ? "#dc2626" : undefined,
+                  }}
+                />
+                {errors.confirmPassword && (
+                  <p style={errStyle}>{errors.confirmPassword}</p>
+                )}
               </div>
               <div style={{ gridColumn: "1/-1" }}>
                 <label style={labelStyle}>Brief Description</label>
