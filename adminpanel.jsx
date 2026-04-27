@@ -2727,6 +2727,7 @@ function Requests() {
         ))}
       </div>
       <div
+        className="ra-chart-grid"
         style={{
           display: "grid",
           gridTemplateColumns: selected ? "2fr 1fr" : "1fr",
@@ -3819,6 +3820,7 @@ function Settings_Page() {
                 gap: 12,
                 padding: "10px 0",
                 borderBottom: `1px solid ${t.border}`,
+                flexWrap: "wrap",
               }}
             >
               <div style={{ flex: 1 }}>
