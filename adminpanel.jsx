@@ -568,6 +568,7 @@ function TD({ children, style }) {
         borderBottom: `1px solid ${t.rowAlt}`,
         fontSize: 12,
         color: t.text2,
+        whiteSpace: "nowrap",
         ...style,
       }}
     >
