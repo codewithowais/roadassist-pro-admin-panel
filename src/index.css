@@ -5,3 +5,116 @@
 *, *::before, *::after {
   box-sizing: border-box;
 }
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Tables marked .ra-table-scroll get horizontal scrolling on overflow.
+   Prevents the whole layout from stretching when an admin opens a wide
+   table on a narrow viewport. */
+.ra-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.ra-table-scroll table {
+  min-width: 640px;
+  width: 100%;
+}
+
+/* Mobile: tighten paddings on cards and the main content area, stack
+   stat-card grids to a single column, and let modals span the full
+   viewport width minus a small gutter. Inline-style selectors aren't
+   targetable here, so we mark the relevant containers with class
+   names from React. */
+@media (max-width: 768px) {
+  .ra-content {
+    padding: 14px !important;
+  }
+  .ra-card {
+    padding: 12px !important;
+  }
+  .ra-stat-grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 9px !important;
+  }
+  .ra-chart-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .ra-modal {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: calc(100vh - 24px) !important;
+    border-radius: 14px !important;
+  }
+  .ra-form-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .ra-topbar {
+    padding: 10px 14px !important;
+  }
+  .ra-topbar-spacer {
+    display: none !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .ra-stat-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .ra-content {
+    padding: 10px !important;
+  }
+}
+
+/* Vendor register form (/register) — mobile niceties */
+@media (max-width: 640px) {
+  .vr-card {
+    padding: 18px !important;
+    border-radius: 14px !important;
+  }
+}
+@media (max-width: 480px) {
+  .vr-card {
+    padding: 14px !important;
+  }
+}
+
+/* Sidebar starts collapsed off-screen on mobile and slides in when
+   .ra-sidebar-open is added to <body>. The hamburger toggle in the
+   topbar flips this. */
+.ra-mobile-sidebar-backdrop {
+  display: none;
+}
+@media (max-width: 768px) {
+  .ra-sidebar {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    height: 100vh !important;
+    z-index: 900;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.18);
+  }
+  body.ra-sidebar-open .ra-sidebar {
+    transform: translateX(0);
+  }
+  body.ra-sidebar-open .ra-mobile-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 800;
+  }
+  .ra-hamburger {
+    display: inline-flex !important;
+  }
+}
+.ra-hamburger {
+  display: none;
+}

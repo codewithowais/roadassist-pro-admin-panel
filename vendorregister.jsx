@@ -462,6 +462,7 @@ export default function VendorRegister() {
 
       {/* Card */}
       <div
+        className="vr-card"
         style={{
           maxWidth: 640,
           margin: "0 auto",
@@ -490,7 +491,7 @@ export default function VendorRegister() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
                 gap: 12,
               }}
             >
@@ -547,7 +548,7 @@ export default function VendorRegister() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
                 gap: 16,
               }}
             >
@@ -675,7 +676,7 @@ export default function VendorRegister() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
                 gap: 16,
               }}
             >
@@ -919,7 +920,7 @@ export default function VendorRegister() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
                 gap: 16,
                 marginTop: 8,
               }}

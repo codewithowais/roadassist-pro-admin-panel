@@ -304,6 +304,7 @@ function Card({ children, style }) {
   const t = useTheme();
   return (
     <div
+      className="ra-card"
       style={{
         background: t.card,
         border: `1px solid ${t.border}`,
@@ -539,20 +540,23 @@ function Tbl({ headers, rows }) {
     textAlign: "left",
     padding: "7px 8px",
     borderBottom: `1px solid ${t.border}`,
+    whiteSpace: "nowrap",
   };
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-      <thead>
-        <tr>
-          {headers.map((h) => (
-            <th key={h} style={TH}>
-              {h}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>{rows}</tbody>
-    </table>
+    <div className="ra-table-scroll">
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            {headers.map((h) => (
+              <th key={h} style={TH}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
   );
 }
 function TD({ children, style }) {
@@ -885,7 +889,8 @@ function NotificationPanel({ open, onClose }) {
           position: "fixed",
           top: 0,
           right: 0,
-          width: 360,
+          width: "min(360px, 100vw)",
+          maxWidth: "100vw",
           height: "100vh",
           background: t.sidebar,
           borderLeft: `1px solid ${t.border}`,
@@ -1295,6 +1300,7 @@ function AddVendorModal({ onClose, existing }) {
         }}
       />
       <div
+        className="ra-modal"
         style={{
           position: "fixed",
           top: "50%",
@@ -1351,6 +1357,7 @@ function AddVendorModal({ onClose, existing }) {
             </div>
           )}
           <div
+            className="ra-form-grid"
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
           >
             <FG label="Business Name *" error={fieldErrs.name}>
@@ -1597,6 +1604,7 @@ function Dashboard() {
   return (
     <>
       <div
+        className="ra-stat-grid"
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(6,1fr)",
@@ -1646,6 +1654,7 @@ function Dashboard() {
         />
       </div>
       <div
+        className="ra-chart-grid"
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
@@ -1730,6 +1739,7 @@ function Dashboard() {
         </Card>
       </div>
       <div
+        className="ra-chart-grid"
         style={{
           display: "grid",
           gridTemplateColumns: "2fr 1fr",
@@ -2096,6 +2106,7 @@ function VendorDocsModal({ vendor, onClose }) {
         style={{ position: "fixed", inset: 0, background: "#0008", zIndex: 1000 }}
       />
       <div
+        className="ra-modal"
         style={{
           position: "fixed",
           top: "50%",
@@ -2362,6 +2373,7 @@ function Vendors() {
             }}
           />
           <div
+            className="ra-modal"
             style={{
               position: "fixed",
               top: "50%",
@@ -2887,6 +2899,7 @@ function SOS_Page() {
   return (
     <>
       <div
+        className="ra-stat-grid"
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(4,1fr)",
@@ -3035,6 +3048,7 @@ function Finance() {
   return (
     <>
       <div
+        className="ra-stat-grid"
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(6,1fr)",
@@ -4351,8 +4365,14 @@ export default function AdminPanel() {
             onClose={() => setNotifOpen(false)}
           />
 
+          {/* Backdrop for mobile sidebar drawer */}
+          <div
+            className="ra-mobile-sidebar-backdrop"
+            onClick={() => document.body.classList.remove("ra-sidebar-open")}
+          />
           {/* Sidebar */}
           <div
+            className="ra-sidebar"
             style={{
               width: 215,
               minWidth: 215,
@@ -4550,8 +4570,9 @@ export default function AdminPanel() {
           >
             {/* Topbar */}
             <div
+              className="ra-topbar"
               style={{
-                height: 50,
+                minHeight: 50,
                 background: t.sidebar,
                 borderBottom: `1px solid ${t.border}`,
                 display: "flex",
@@ -4562,12 +4583,37 @@ export default function AdminPanel() {
                 transition: "background .25s",
               }}
             >
+              {/* Hamburger — only visible on mobile via CSS */}
+              <button
+                className="ra-hamburger"
+                aria-label="Open menu"
+                onClick={() =>
+                  document.body.classList.toggle("ra-sidebar-open")
+                }
+                style={{
+                  background: t.hover,
+                  border: `1px solid ${t.border}`,
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  fontSize: 15,
+                  color: t.text2,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                ☰
+              </button>
               <div
                 style={{
                   flex: 1,
                   fontSize: 15,
                   fontWeight: 700,
                   color: t.white,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
                 }}
               >
                 {current?.label}
@@ -4712,7 +4758,7 @@ export default function AdminPanel() {
             </div>
 
             {/* Page */}
-            <div style={{ flex: 1, overflowY: "auto", padding: 18 }}>
+            <div className="ra-content" style={{ flex: 1, overflowY: "auto", padding: 18 }}>
               <div style={{ marginBottom: 16 }}>
                 <div
                   style={{
