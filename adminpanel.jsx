@@ -3859,6 +3859,210 @@ function auditActionMeta(action) {
   return { label: a.replace(/_/g, " ") || "Event", icon: "▶", color: "#6b7280" };
 }
 
+function Notifications_Page() {
+  const t = useTheme();
+  const { notifications, adminUser } = useAdmin();
+  const [form, setForm] = useState({ title: "", body: "", topic: "all" });
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const handleSend = async () => {
+    const title = form.title.trim();
+    const body = form.body.trim();
+    if (title.length < 3 || title.length > 100) {
+      setResult({ ok: false, msg: "Title must be 3–100 characters." });
+      return;
+    }
+    if (body.length < 3 || body.length > 500) {
+      setResult({ ok: false, msg: "Body must be 3–500 characters." });
+      return;
+    }
+    setSending(true);
+    setResult(null);
+    try {
+      const r = await sendNotification({
+        ...form,
+        sentBy: adminUser?.email || "admin",
+      });
+      await logAudit(
+        "broadcast_sent",
+        "notification",
+        form.topic || "all",
+        {
+          entityName: form.title,
+          topic: form.topic || "all",
+          body: form.body,
+          deliveryStatus: r?.deliveryStatus,
+        },
+        adminUser,
+      );
+      if (
+        r?.deliveryStatus === "delivered" ||
+        r?.deliveryStatus === "delivered_legacy"
+      ) {
+        setResult({
+          ok: true,
+          msg:
+            r.deliveryStatus === "delivered_legacy"
+              ? "Sent via legacy Cloud Function."
+              : "Saved and pushed to subscribers.",
+        });
+      } else {
+        setResult({
+          ok: false,
+          msg:
+            "Saved to history but push failed: " +
+            (r?.deliveryError || "unknown error"),
+        });
+      }
+      setTimeout(() => setResult(null), 6000);
+      setForm({ title: "", body: "", topic: "all" });
+    } catch (e) {
+      setResult({ ok: false, msg: e.message || "Send failed." });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div
+      className="ra-chart-grid"
+      style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}
+    >
+      <Card>
+        <CT>Send Notification</CT>
+        {result && (
+          <div
+            style={{
+              background: result.ok ? "#dcfce7" : "#fef2f2",
+              border: `1px solid ${result.ok ? "#bbf7d0" : "#fecaca"}`,
+              borderRadius: 8,
+              padding: "10px 12px",
+              marginBottom: 12,
+              fontSize: 12,
+              color: result.ok ? "#16a34a" : "#dc2626",
+              fontWeight: 600,
+              lineHeight: 1.4,
+            }}
+          >
+            {result.ok ? "✓ " : "⚠ "}
+            {result.msg}
+          </div>
+        )}
+        <FG label="Title (3–100 chars)">
+          <Inp
+            value={form.title}
+            onChange={(e) => set("title", e.target.value)}
+            placeholder="e.g. Road Closure Alert"
+            maxLength={100}
+          />
+        </FG>
+        <FG label="Body (3–500 chars)">
+          <textarea
+            value={form.body}
+            onChange={(e) => set("body", e.target.value)}
+            placeholder="Notification message…"
+            rows={4}
+            maxLength={500}
+            style={{
+              background: t.input,
+              border: `1px solid ${t.border}`,
+              borderRadius: 7,
+              padding: "8px 10px",
+              color: t.text1,
+              fontSize: 12,
+              outline: "none",
+              width: "100%",
+              resize: "vertical",
+            }}
+          />
+        </FG>
+        <FG label="Recipients">
+          <Sel
+            value={form.topic}
+            onChange={(e) => set("topic", e.target.value)}
+          >
+            <option value="all">All Users (everyone)</option>
+            <option value="users">End Users only</option>
+            <option value="vendors">All Vendors</option>
+            <option value="karachi">Karachi Only</option>
+            <option value="lahore">Lahore Only</option>
+          </Sel>
+        </FG>
+        <Btn
+          variant="primary"
+          onClick={handleSend}
+          disabled={sending || !form.title || !form.body}
+          style={{
+            width: "100%",
+            justifyContent: "center",
+            marginTop: 4,
+          }}
+        >
+          {sending ? "Sending…" : "📢 Send Notification"}
+        </Btn>
+        <div style={{ fontSize: 11, color: t.muted, marginTop: 10 }}>
+          Tip: devices must subscribe to the matching FCM topic in your
+          mobile app for push to be delivered. The "all" topic should be
+          subscribed-to on app first launch.
+        </div>
+      </Card>
+
+      <Card>
+        <CT>History</CT>
+        {notifications.length === 0 ? (
+          <Empty icon="🔔" text="No notifications sent yet" />
+        ) : (
+          <div style={{ maxHeight: 480, overflowY: "auto" }}>
+            {notifications.map((n, i) => (
+              <div
+                key={n.id || i}
+                style={{
+                  borderBottom: `1px solid ${t.border}`,
+                  padding: "10px 0",
+                }}
+              >
+                <div
+                  style={{ fontSize: 13, fontWeight: 600, color: t.text1 }}
+                >
+                  {n.title || "—"}
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: t.text2,
+                    marginTop: 3,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {n.body || ""}
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: t.muted,
+                    marginTop: 4,
+                    display: "flex",
+                    gap: 8,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span>To: {n.topic || "all"}</span>
+                  {n.sentBy && <span>· {n.sentBy}</span>}
+                  {n.sentAt?.toDate && (
+                    <span>· {n.sentAt.toDate().toLocaleString()}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function AuditLog_Page() {
   const t = useTheme();
   const { auditLogData } = useAdmin();
@@ -4957,6 +5161,12 @@ const NAV = [
         comp: Reviews_Page,
         badgeKey: "flaggedReviews",
         bc: "#e8630a",
+      },
+      {
+        key: "notifications",
+        label: "Notifications",
+        icon: "🔔",
+        comp: Notifications_Page,
       },
     ],
   },
