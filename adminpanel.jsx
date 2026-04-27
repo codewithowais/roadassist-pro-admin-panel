@@ -931,6 +931,16 @@ function NotificationPanel({ open, onClose }) {
 function AddVendorModal({ onClose }) {
   const t = useTheme();
   const { adminUser } = useAdmin();
+  // Stable per-modal UUID — used as the R2 prefix for any docs uploaded
+  // before the Firestore vendor doc is written. We persist this id on the
+  // vendor record so future replace/delete operations can find the folder.
+  const [applicationId] = useState(() => {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  });
   const [form, setForm] = useState({
     name: "",
     category: "",
@@ -944,9 +954,33 @@ function AddVendorModal({ onClose }) {
     costRange: "",
     status: "pending",
   });
+  const [uploads, setUploads] = useState({ cnic: null, license: null, photo: null });
+  const [progress, setProgress] = useState({ cnic: 0, license: 0, photo: 0 });
+  const [uploadErrs, setUploadErrs] = useState({});
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const fileRefs = useRef({});
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const handleFile = async (key, file) => {
+    if (!file) return;
+    setUploadErrs((p) => ({ ...p, [key]: null }));
+    setProgress((p) => ({ ...p, [key]: 0 }));
+    try {
+      const newPath = await uploadFile(file, applicationId, key, (pct) =>
+        setProgress((p) => ({ ...p, [key]: pct })),
+      );
+      // If a previous file at a different ext was uploaded for this slot,
+      // clean it up so we don't leave orphans in R2.
+      const oldPath = uploads[key];
+      if (oldPath && oldPath !== newPath) {
+        try { await deleteVendorDoc(oldPath); } catch {}
+      }
+      setUploads((p) => ({ ...p, [key]: newPath }));
+    } catch (e) {
+      setUploadErrs((p) => ({ ...p, [key]: e.message || "upload_failed" }));
+    }
+  };
 
   const handleSubmit = async () => {
     if (!form.name || !form.category || !form.phone || !form.city) {
@@ -957,14 +991,20 @@ function AddVendorModal({ onClose }) {
     try {
       await addVendor({
         ...form,
+        applicationId,
         lat: parseFloat(form.lat) || 24.8607,
         lng: parseFloat(form.lng) || 67.0011,
+        documents: {
+          cnicPath: uploads.cnic,
+          licensePath: uploads.license,
+          photoPath: uploads.photo,
+        },
       });
       await logAudit(
         "vendor_created",
         "vendor",
         form.name,
-        { name: form.name },
+        { name: form.name, applicationId },
         adminUser,
       );
       onClose();
@@ -975,10 +1015,19 @@ function AddVendorModal({ onClose }) {
     }
   };
 
+  // If admin cancels after uploading files, clean up R2 orphans.
+  const handleCancel = async () => {
+    const orphaned = Object.values(uploads).filter(Boolean);
+    onClose();
+    for (const p of orphaned) {
+      try { await deleteVendorDoc(p); } catch {}
+    }
+  };
+
   return (
     <>
       <div
-        onClick={onClose}
+        onClick={handleCancel}
         style={{
           position: "fixed",
           inset: 0,
@@ -1014,7 +1063,7 @@ function AddVendorModal({ onClose }) {
             Add New Vendor
           </div>
           <button
-            onClick={onClose}
+            onClick={handleCancel}
             style={{
               background: "transparent",
               border: "none",
@@ -1137,6 +1186,80 @@ function AddVendorModal({ onClose }) {
                 placeholder="67.0011"
               />
             </FG>
+            <div
+              style={{
+                gridColumn: "1/-1",
+                borderTop: `1px solid ${t.border}`,
+                paddingTop: 12,
+                marginTop: 4,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: t.muted,
+                  fontWeight: 600,
+                  marginBottom: 8,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.4,
+                }}
+              >
+                Documents (optional)
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {[
+                  { key: "cnic", label: "CNIC" },
+                  { key: "license", label: "License / Certificate" },
+                  { key: "photo", label: "Owner Photo" },
+                ].map(({ key, label }) => (
+                  <div
+                    key={key}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      ref={(el) => (fileRefs.current[key] = el)}
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        e.target.value = "";
+                        handleFile(key, f);
+                      }}
+                    />
+                    <Btn
+                      style={{ padding: "4px 10px", fontSize: 11, minWidth: 130 }}
+                      onClick={() => fileRefs.current[key]?.click()}
+                    >
+                      {uploads[key] ? `Replace ${label}` : `Upload ${label}`}
+                    </Btn>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: t.muted,
+                        flex: 1,
+                        minWidth: 0,
+                      }}
+                    >
+                      {uploadErrs[key] ? (
+                        <span style={{ color: "#dc2626" }}>{uploadErrs[key]}</span>
+                      ) : uploads[key] ? (
+                        <span style={{ color: "#16a34a" }}>✓ Uploaded</span>
+                      ) : progress[key] > 0 && progress[key] < 100 ? (
+                        <span>Uploading… {progress[key]}%</span>
+                      ) : (
+                        "—"
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
         <div
@@ -1148,7 +1271,7 @@ function AddVendorModal({ onClose }) {
             justifyContent: "flex-end",
           }}
         >
-          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn onClick={handleCancel}>Cancel</Btn>
           <Btn variant="primary" onClick={handleSubmit} disabled={loading}>
             {loading ? "Saving…" : "Add Vendor"}
           </Btn>
