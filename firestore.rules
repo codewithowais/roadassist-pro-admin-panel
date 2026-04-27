@@ -2,16 +2,39 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Only authenticated admin users can access everything
+    // Only authenticated admin users can access most things
     function isAdmin() {
       return request.auth != null &&
              exists(/databases/$(database)/documents/admin_users/$(request.auth.uid));
     }
 
-    // Admin-only collections
+    // Vendors:
+    //   - Admins can do anything.
+    //   - The public can CREATE a self-registration doc, but only with
+    //     trust-sensitive fields locked to safe defaults so applicants
+    //     can't self-approve.
+    //   - Public read/update/delete is forbidden.
     match /vendors/{id} {
-      allow read, write: if isAdmin();
+      allow read, update, delete: if isAdmin();
+      allow create: if
+        request.resource.data.status == "pending"
+        && request.resource.data.kyc == "pending"
+        && request.resource.data.isVerified == false
+        && request.resource.data.source == "self_registration"
+        && request.resource.data.rating == 0
+        && request.resource.data.reviewCount == 0
+        // Light payload sanity: required string fields and size cap.
+        && request.resource.data.businessName is string
+        && request.resource.data.businessName.size() > 0
+        && request.resource.data.businessName.size() < 200
+        && request.resource.data.ownerName is string
+        && request.resource.data.ownerName.size() > 0
+        && request.resource.data.ownerName.size() < 200
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() > 0
+        && request.resource.data.phone.size() < 50;
     }
+
     match /users/{id} {
       allow read, write: if isAdmin();
     }

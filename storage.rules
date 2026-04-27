@@ -1,0 +1,27 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Vendor self-registration uploads (CNIC, license, photo).
+    //   - Public can upload to vendor_docs/* with size + content-type caps.
+    //   - Only admins can read or modify after upload.
+    match /vendor_docs/{path=**} {
+      allow create: if request.resource.size < 10 * 1024 * 1024
+                    && request.resource.contentType.matches('image/.*');
+      allow read, update, delete:
+        if request.auth != null
+        && firestore.exists(
+             /databases/(default)/documents/admin_users/$(request.auth.uid)
+           );
+    }
+
+    // Everything else is admin-only.
+    match /{allPaths=**} {
+      allow read, write:
+        if request.auth != null
+        && firestore.exists(
+             /databases/(default)/documents/admin_users/$(request.auth.uid)
+           );
+    }
+  }
+}
