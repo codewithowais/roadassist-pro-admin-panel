@@ -3124,13 +3124,42 @@ export default function AdminPanel() {
   useEffect(() => { localStorage.setItem("ra_dark", isDark); }, [isDark]);
   useEffect(() => { localStorage.setItem("ra_primary", primaryColor); }, [primaryColor]);
 
-  // Auth listener
+  // Auth listener — verify admin_users membership before exposing listeners.
+  // Without this, a stale Firebase Auth session (e.g. cached from a previous
+  // test) flips adminUser truthy briefly, attaches all 7 Firestore listeners,
+  // and floods the console with permission-denied errors before the Login
+  // screen kicks the user out.
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setAdminUser(user || null);
-      setAuthLoading(false);
+    let cancelled = false;
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        if (!cancelled) {
+          setAdminUser(null);
+          setAuthLoading(false);
+        }
+        return;
+      }
+      try {
+        const snap = await getDoc(doc(db, "admin_users", user.uid));
+        if (cancelled) return;
+        if (snap.exists()) {
+          setAdminUser(user);
+        } else {
+          await adminLogout();
+          setAdminUser(null);
+        }
+      } catch {
+        if (cancelled) return;
+        await adminLogout().catch(() => {});
+        setAdminUser(null);
+      } finally {
+        if (!cancelled) setAuthLoading(false);
+      }
     });
-    return unsub;
+    return () => {
+      cancelled = true;
+      unsub();
+    };
   }, []);
 
   // Firestore listeners — only when logged in
