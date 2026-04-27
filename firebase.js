@@ -420,6 +420,45 @@ export const getAuditLog = (cb) =>
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 
+// ── Admin users ───────────────────────────────────────────────────
+// Roles: "superadmin" (locked, the original bootstrap admin),
+//        "manager" (can invite/edit/disable other non-superadmin admins),
+//        "support" (content-only access),
+//        "viewer"  (read-only).
+export const getAdminUsers = (cb) =>
+  onSnapshot(collection(db, COLS.adminUsers), (snap) =>
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+  );
+
+export const updateAdminUser = (uid, data) =>
+  updateDoc(doc(db, COLS.adminUsers, uid), data);
+
+export const removeAdminUser = (uid) =>
+  deleteDoc(doc(db, COLS.adminUsers, uid));
+
+// ── Service zones ─────────────────────────────────────────────────
+const ZONES_COL = "service_zones";
+export const getZones = (cb) =>
+  onSnapshot(
+    query(collection(db, ZONES_COL), orderBy("createdAt", "desc")),
+    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+  );
+
+export const addZone = (data) =>
+  addDoc(collection(db, ZONES_COL), {
+    name: "",
+    coverage: "high",
+    avgResponseMins: 0,
+    vendorCount: 0,
+    ...data,
+    createdAt: serverTimestamp(),
+  });
+
+export const updateZone = (id, data) =>
+  updateDoc(doc(db, ZONES_COL, id), data);
+
+export const deleteZone = (id) => deleteDoc(doc(db, ZONES_COL, id));
+
 // ── App config ────────────────────────────────────────────────────
 export const getAppConfig = (cb) =>
   onSnapshot(doc(db, COLS.appConfig, "main"), (snap) => cb(snap.data() || {}));

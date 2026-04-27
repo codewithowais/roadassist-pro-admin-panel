@@ -4550,6 +4550,7 @@ export default function AdminPanel() {
   );
   const [page, setPage] = useState("dashboard");
   const [adminUser, setAdminUser] = useState(null);
+  const [adminProfile, setAdminProfile] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [notifOpen, setNotifOpen] = useState(false);
 
@@ -4588,9 +4589,15 @@ export default function AdminPanel() {
       try {
         const snap = await getDoc(doc(db, "admin_users", user.uid));
         if (cancelled) return;
-        if (snap.exists()) {
+        const data = snap.data();
+        if (snap.exists() && !data?.disabled) {
+          setAdminProfile({
+            role: data?.role || "viewer",
+            name: data?.name || null,
+          });
           setAdminUser(user);
         } else {
+          setAdminProfile(null);
           await adminLogout();
           setAdminUser(null);
         }
@@ -4602,6 +4609,7 @@ export default function AdminPanel() {
         // rules are the real security boundary. Failing-closed here would
         // lock out legit admins on flaky networks.
         if (err && err.code === "permission-denied") {
+          setAdminProfile(null);
           await adminLogout().catch(() => {});
           setAdminUser(null);
         } else {
