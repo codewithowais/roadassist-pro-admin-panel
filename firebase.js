@@ -34,12 +34,6 @@ import {
   serverTimestamp,
   Timestamp,
 } from "firebase/firestore";
-import {
-  getStorage,
-  ref,
-  uploadBytesResumable,
-  getDownloadURL,
-} from "firebase/storage";
 import { getMessaging, getToken, onMessage } from "firebase/messaging";
 
 // ── Config ────────────────────────────────────────────────────────
@@ -55,7 +49,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
-export const storage = getStorage(app);
 export const messaging = getMessaging(app);
 
 // ── Firestore collection paths ────────────────────────────────────
@@ -113,7 +106,29 @@ export const addVendor = (data) =>
 export const updateVendor = (id, data) =>
   updateDoc(doc(db, COLS.vendors, id), data);
 
-export const deleteVendor = (id) => deleteDoc(doc(db, COLS.vendors, id));
+export const deleteVendor = async (id) => {
+  // Best-effort: also delete this applicant's R2 docs folder.
+  try {
+    const snap = await getDoc(doc(db, COLS.vendors, id));
+    const applicationId = snap.data()?.applicationId;
+    if (applicationId) {
+      const token = await auth.currentUser?.getIdToken();
+      if (token) {
+        await fetch("/api/vendor-docs/delete", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ applicationId }),
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("R2 cleanup failed (non-fatal):", e);
+  }
+  return deleteDoc(doc(db, COLS.vendors, id));
+};
 
 export const approveKYC = async (id, adminUser) => {
   await updateDoc(doc(db, COLS.vendors, id), {
@@ -262,20 +277,69 @@ export const saveAppConfig = (data) =>
     { merge: true },
   );
 
-// ── File upload helper ────────────────────────────────────────────
-export const uploadFile = (file, path, onProgress) =>
-  new Promise((resolve, reject) => {
-    const r = ref(storage, path);
-    const task = uploadBytesResumable(r, file);
-    task.on(
-      "state_changed",
-      (snap) =>
-        onProgress &&
-        onProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
-      reject,
-      async () => resolve(await getDownloadURL(task.snapshot.ref)),
-    );
+// ── File upload helper (Cloudflare R2 via presigned PUT) ──────────
+// Uploads `file` to R2 under `<applicationId>/<key>.<ext>`.
+// Returns the storage path (NOT a URL — use viewVendorDoc(path) to get
+// a signed URL for display). Stored path goes into the vendor doc so
+// admins can later view/delete via the API routes.
+export const uploadFile = (file, applicationId, key, onProgress) =>
+  new Promise(async (resolve, reject) => {
+    try {
+      const presignRes = await fetch("/api/vendor-docs/upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          applicationId,
+          key,
+          contentType: file.type,
+          size: file.size,
+        }),
+      });
+      if (!presignRes.ok) {
+        const j = await presignRes.json().catch(() => ({}));
+        throw new Error(j.error || `presign_failed (${presignRes.status})`);
+      }
+      const { uploadUrl, path } = await presignRes.json();
+
+      // Use XMLHttpRequest for upload progress.
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", uploadUrl);
+      xhr.setRequestHeader("Content-Type", file.type);
+      xhr.upload.onprogress = (e) => {
+        if (onProgress && e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve(path);
+        else reject(new Error(`upload_failed (${xhr.status})`));
+      };
+      xhr.onerror = () => reject(new Error("network_error"));
+      xhr.send(file);
+    } catch (e) {
+      reject(e);
+    }
   });
+
+// Get a 1-hour signed URL for an admin to view a vendor doc.
+export async function viewVendorDoc(path) {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error("not_signed_in");
+  const res = await fetch("/api/vendor-docs/view-url", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.error || `view_url_failed (${res.status})`);
+  }
+  const { viewUrl } = await res.json();
+  return viewUrl;
+}
 
 // ── FCM foreground listener ───────────────────────────────────────
 export const onFCMMessage = (cb) => onMessage(messaging, cb);

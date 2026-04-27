@@ -8,6 +8,17 @@
 import { useState, useRef } from "react";
 import { submitVendorApplication, uploadFile } from "./firebase";
 
+// Stable per-form-instance id used as the R2 path prefix for this
+// applicant's documents (vendor-docs/<applicationId>/cnic.jpg, etc.).
+function makeApplicationId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  // RFC4122 v4 fallback for very old browsers.
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 const CATEGORIES = [
   { value: "Mechanic", label: "🔧 Mechanic", desc: "General car/bike repairs" },
   {
@@ -55,6 +66,7 @@ const STEPS = [
 ];
 
 export default function VendorRegister() {
+  const [applicationId] = useState(makeApplicationId);
   const [step, setStep] = useState(0);
   const [done, setDone] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -120,12 +132,10 @@ export default function VendorRegister() {
   const handleFile = async (key, file) => {
     if (!file) return;
     try {
-      const url = await uploadFile(
-        file,
-        `vendor_docs/${Date.now()}_${key}_${file.name}`,
-        (pct) => setProgress((p) => ({ ...p, [key]: pct })),
+      const path = await uploadFile(file, applicationId, key, (pct) =>
+        setProgress((p) => ({ ...p, [key]: pct })),
       );
-      setUploads((p) => ({ ...p, [key]: url }));
+      setUploads((p) => ({ ...p, [key]: path }));
       setErrors((p) => ({ ...p, [key]: undefined }));
     } catch {
       setErrors((p) => ({ ...p, [key]: "Upload failed. Try again." }));
@@ -138,12 +148,13 @@ export default function VendorRegister() {
     try {
       await submitVendorApplication({
         ...form,
+        applicationId,
         lat: parseFloat(form.lat) || 24.8607,
         lng: parseFloat(form.lng) || 67.0011,
         documents: {
-          cnicUrl: uploads.cnic,
-          licenseUrl: uploads.license,
-          photoUrl: uploads.photo,
+          cnicPath: uploads.cnic,
+          licensePath: uploads.license,
+          photoPath: uploads.photo,
         },
       });
       setDone(true);

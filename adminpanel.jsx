@@ -55,6 +55,7 @@ import {
   saveAppConfig,
   logAudit,
   uploadFile,
+  viewVendorDoc,
   onFCMMessage,
 } from "./firebase";
 import { onAuthStateChanged } from "firebase/auth";
@@ -1548,6 +1549,113 @@ function Users() {
   );
 }
 
+function VendorDocsModal({ vendor, onClose }) {
+  const t = useTheme();
+  const [urls, setUrls] = useState({ cnic: null, license: null, photo: null });
+  const [errs, setErrs] = useState({});
+  const docs = vendor.documents || {};
+  const items = [
+    { key: "cnic", label: "CNIC", path: docs.cnicPath || docs.cnicUrl },
+    { key: "license", label: "License / Certificate", path: docs.licensePath || docs.licenseUrl },
+    { key: "photo", label: "Owner Photo", path: docs.photoPath || docs.photoUrl },
+  ];
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      for (const it of items) {
+        if (!it.path) continue;
+        // Old Firebase Storage URLs already start with https://
+        if (/^https?:/i.test(it.path)) {
+          if (alive) setUrls((p) => ({ ...p, [it.key]: it.path }));
+          continue;
+        }
+        try {
+          const u = await viewVendorDoc(it.path);
+          if (alive) setUrls((p) => ({ ...p, [it.key]: u }));
+        } catch (e) {
+          if (alive) setErrs((p) => ({ ...p, [it.key]: e.message || "failed" }));
+        }
+      }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vendor?.id]);
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{ position: "fixed", inset: 0, background: "#0008", zIndex: 1000 }}
+      />
+      <div
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%,-50%)",
+          width: "min(720px, 92vw)",
+          maxHeight: "85vh",
+          overflowY: "auto",
+          background: t.sidebar,
+          borderRadius: 14,
+          zIndex: 1001,
+          padding: 20,
+          border: `1px solid ${t.border}`,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 14,
+            fontWeight: 700,
+            color: t.white,
+            marginBottom: 14,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          Documents — {vendor.businessName || vendor.name || "Vendor"}
+          <Btn onClick={onClose} style={{ padding: "3px 10px", fontSize: 11 }}>Close</Btn>
+        </div>
+        <div style={{ display: "grid", gap: 14 }}>
+          {items.map((it) => (
+            <div key={it.key} style={{ borderTop: `1px solid ${t.border}`, paddingTop: 10 }}>
+              <div style={{ fontSize: 11, color: t.muted, marginBottom: 6, fontWeight: 600 }}>
+                {it.label}
+              </div>
+              {!it.path ? (
+                <div style={{ fontSize: 12, color: t.muted, fontStyle: "italic" }}>
+                  Not provided
+                </div>
+              ) : errs[it.key] ? (
+                <div style={{ fontSize: 12, color: "#dc2626" }}>
+                  Failed to load: {errs[it.key]}
+                </div>
+              ) : !urls[it.key] ? (
+                <div style={{ fontSize: 12, color: t.muted }}>Loading…</div>
+              ) : (
+                <a href={urls[it.key]} target="_blank" rel="noreferrer">
+                  <img
+                    src={urls[it.key]}
+                    alt={it.label}
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: 360,
+                      borderRadius: 8,
+                      border: `1px solid ${t.border}`,
+                      display: "block",
+                    }}
+                  />
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function Vendors() {
   const t = useTheme();
   const { vendors, adminUser } = useAdmin();
@@ -1557,6 +1665,7 @@ function Vendors() {
   const [showAdd, setShowAdd] = useState(false);
   const [rejectModal, setRejectModal] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [docsVendor, setDocsVendor] = useState(null);
 
   const filtered = vendors.filter(
     (v) =>
@@ -1595,6 +1704,9 @@ function Vendors() {
   return (
     <>
       {showAdd && <AddVendorModal onClose={() => setShowAdd(false)} />}
+      {docsVendor && (
+        <VendorDocsModal vendor={docsVendor} onClose={() => setDocsVendor(null)} />
+      )}
       {rejectModal && (
         <>
           <div
@@ -1825,6 +1937,12 @@ function Vendors() {
                         Verify
                       </Btn>
                     )}
+                    <Btn
+                      style={{ padding: "3px 7px", fontSize: 10 }}
+                      onClick={() => setDocsVendor(v)}
+                    >
+                      Docs
+                    </Btn>
                     <Btn
                       style={{ padding: "3px 7px", fontSize: 10 }}
                       onClick={() => handleDelete(v)}
