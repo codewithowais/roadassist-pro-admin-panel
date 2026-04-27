@@ -22,6 +22,11 @@ export const r2 = new S3Client({
     accessKeyId: R2_ACCESS_KEY_ID,
     secretAccessKey: R2_SECRET_ACCESS_KEY,
   },
+  // R2 does not handle the default CRC32 checksum that AWS SDK v3 (>=3.729)
+  // injects on presigned PUT URLs. Without these, R2 rejects the upload with
+  // a signature/integrity error. WHEN_REQUIRED disables the auto-checksum.
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
