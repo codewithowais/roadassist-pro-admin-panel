@@ -1435,12 +1435,14 @@ function Dashboard() {
                 {i + 1}
               </span>
               <Av
-                initials={(v.name || "V").slice(0, 2).toUpperCase()}
+                initials={(v.name || v.businessName || v.ownerName || "V").slice(0, 2).toUpperCase()}
                 color={getCatColors(t.orange)[v.category] || t.orange}
                 size={24}
               />
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, color: t.text1 }}>{v.name}</div>
+                <div style={{ fontSize: 12, color: t.text1 }}>
+                  {v.name || v.businessName || v.ownerName || "—"}
+                </div>
                 <div style={{ fontSize: 10, color: t.muted }}>{v.category}</div>
               </div>
               <Stars n={v.rating || 0} />
@@ -1667,11 +1669,15 @@ function Vendors() {
   const [rejectReason, setRejectReason] = useState("");
   const [docsVendor, setDocsVendor] = useState(null);
 
+  // Self-registered vendors save businessName / ownerName, not name.
+  // Fall back across all three so they appear in the table and search.
+  const vendorName = (v) =>
+    v.name || v.businessName || v.ownerName || "";
   const filtered = vendors.filter(
     (v) =>
       (catF === "All" || v.category === catF) &&
       (kycTab === "all" || v.kyc === kycTab) &&
-      v.name?.toLowerCase().includes(search.toLowerCase()),
+      vendorName(v).toLowerCase().includes(search.toLowerCase()),
   );
 
   const handleVerify = async (v) => {
@@ -1683,18 +1689,19 @@ function Vendors() {
     setRejectReason("");
   };
   const handleSuspend = async (v) => {
-    if (!window.confirm(`Suspend ${v.name}?`)) return;
+    if (!window.confirm(`Suspend ${vendorName(v) || "vendor"}?`)) return;
     await updateVendor(v.id, { status: "suspended" });
     await logAudit("vendor_suspended", "vendor", v.id, {}, adminUser);
   };
   const handleDelete = async (v) => {
-    if (!window.confirm(`Permanently delete ${v.name}?`)) return;
+    const label = vendorName(v) || "vendor";
+    if (!window.confirm(`Permanently delete ${label}?`)) return;
     await deleteVendor(v.id);
     await logAudit(
       "vendor_deleted",
       "vendor",
       v.id,
-      { name: v.name },
+      { name: label },
       adminUser,
     );
   };
@@ -1740,7 +1747,7 @@ function Vendors() {
                 marginBottom: 12,
               }}
             >
-              Reject KYC — {rejectModal.name}
+              Reject KYC — {vendorName(rejectModal) || "vendor"}
             </div>
             <FG label="Rejection Reason">
               <textarea
@@ -1871,11 +1878,11 @@ function Vendors() {
                     style={{ display: "flex", alignItems: "center", gap: 7 }}
                   >
                     <Av
-                      initials={(v.name || "V").slice(0, 2).toUpperCase()}
+                      initials={(vendorName(v) || "V").slice(0, 2).toUpperCase()}
                       color={getCatColors(t.orange)[v.category] || t.orange}
                       size={24}
                     />
-                    {v.name}
+                    {vendorName(v) || "—"}
                   </div>
                 </TD>
                 <TD>
