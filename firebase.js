@@ -341,6 +341,24 @@ export async function viewVendorDoc(path) {
   return viewUrl;
 }
 
+// Admin: delete a single vendor doc object from R2.
+export async function deleteVendorDoc(path) {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error("not_signed_in");
+  const res = await fetch("/api/vendor-docs/delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.error || `delete_failed (${res.status})`);
+  }
+}
+
 // ── FCM foreground listener ───────────────────────────────────────
 export const onFCMMessage = (cb) => onMessage(messaging, cb);
 

@@ -56,6 +56,7 @@ import {
   logAudit,
   uploadFile,
   viewVendorDoc,
+  deleteVendorDoc,
   onFCMMessage,
 } from "./firebase";
 import { onAuthStateChanged } from "firebase/auth";
@@ -1551,37 +1552,119 @@ function Users() {
   );
 }
 
+const DOC_KEYS = [
+  { key: "cnic", label: "CNIC" },
+  { key: "license", label: "License / Certificate" },
+  { key: "photo", label: "Owner Photo" },
+];
+
 function VendorDocsModal({ vendor, onClose }) {
   const t = useTheme();
-  const [urls, setUrls] = useState({ cnic: null, license: null, photo: null });
+  const { adminUser } = useAdmin();
+  const [paths, setPaths] = useState({});
+  const [urls, setUrls] = useState({});
   const [errs, setErrs] = useState({});
-  const docs = vendor.documents || {};
-  const items = [
-    { key: "cnic", label: "CNIC", path: docs.cnicPath || docs.cnicUrl },
-    { key: "license", label: "License / Certificate", path: docs.licensePath || docs.licenseUrl },
-    { key: "photo", label: "Owner Photo", path: docs.photoPath || docs.photoUrl },
-  ];
+  const [busy, setBusy] = useState({}); // { cnic: "uploading"|"deleting"|null }
+  const fileRefs = useRef({});
+
+  // Sync paths from the vendor doc whenever it changes.
+  useEffect(() => {
+    const docs = vendor.documents || {};
+    setPaths({
+      cnic: docs.cnicPath || docs.cnicUrl || null,
+      license: docs.licensePath || docs.licenseUrl || null,
+      photo: docs.photoPath || docs.photoUrl || null,
+    });
+  }, [vendor?.id, vendor?.documents]);
+
+  // Resolve a signed URL for each path that needs one.
   useEffect(() => {
     let alive = true;
     (async () => {
-      for (const it of items) {
-        if (!it.path) continue;
-        // Old Firebase Storage URLs already start with https://
-        if (/^https?:/i.test(it.path)) {
-          if (alive) setUrls((p) => ({ ...p, [it.key]: it.path }));
+      for (const { key } of DOC_KEYS) {
+        const p = paths[key];
+        if (!p) {
+          if (alive) setUrls((u) => ({ ...u, [key]: null }));
+          continue;
+        }
+        // Legacy Firebase Storage URLs are already direct https links.
+        if (/^https?:/i.test(p)) {
+          if (alive) setUrls((u) => ({ ...u, [key]: p }));
           continue;
         }
         try {
-          const u = await viewVendorDoc(it.path);
-          if (alive) setUrls((p) => ({ ...p, [it.key]: u }));
+          const u = await viewVendorDoc(p);
+          if (alive) setUrls((s) => ({ ...s, [key]: u }));
+          if (alive) setErrs((s) => ({ ...s, [key]: null }));
         } catch (e) {
-          if (alive) setErrs((p) => ({ ...p, [it.key]: e.message || "failed" }));
+          if (alive) setErrs((s) => ({ ...s, [key]: e.message || "failed" }));
         }
       }
     })();
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vendor?.id]);
+  }, [paths]);
+
+  const isR2Path = (p) => p && !/^https?:/i.test(p);
+  const canManage = Boolean(vendor.applicationId);
+
+  async function handleReplace(key, file) {
+    if (!file || !canManage) return;
+    setBusy((b) => ({ ...b, [key]: "uploading" }));
+    setErrs((e) => ({ ...e, [key]: null }));
+    const oldPath = paths[key];
+    try {
+      const newPath = await uploadFile(file, vendor.applicationId, key);
+      // Best-effort delete of the old object if path actually changed
+      // (different ext) so we don't leave orphans.
+      if (oldPath && isR2Path(oldPath) && oldPath !== newPath) {
+        try { await deleteVendorDoc(oldPath); } catch {}
+      }
+      await updateVendor(vendor.id, {
+        [`documents.${key}Path`]: newPath,
+      });
+      await logAudit(
+        "vendor_doc_replaced",
+        "vendor",
+        vendor.id,
+        { key, applicationId: vendor.applicationId },
+        adminUser,
+      );
+      setPaths((p) => ({ ...p, [key]: newPath }));
+      // Force a fresh signed URL fetch.
+      setUrls((u) => ({ ...u, [key]: null }));
+    } catch (e) {
+      setErrs((s) => ({ ...s, [key]: e.message || "upload_failed" }));
+    } finally {
+      setBusy((b) => ({ ...b, [key]: null }));
+    }
+  }
+
+  async function handleDelete(key) {
+    const p = paths[key];
+    if (!p) return;
+    if (!window.confirm(`Delete this ${key.toUpperCase()} document?`)) return;
+    setBusy((b) => ({ ...b, [key]: "deleting" }));
+    setErrs((e) => ({ ...e, [key]: null }));
+    try {
+      if (isR2Path(p)) await deleteVendorDoc(p);
+      await updateVendor(vendor.id, {
+        [`documents.${key}Path`]: null,
+      });
+      await logAudit(
+        "vendor_doc_deleted",
+        "vendor",
+        vendor.id,
+        { key },
+        adminUser,
+      );
+      setPaths((s) => ({ ...s, [key]: null }));
+      setUrls((s) => ({ ...s, [key]: null }));
+    } catch (e) {
+      setErrs((s) => ({ ...s, [key]: e.message || "delete_failed" }));
+    } finally {
+      setBusy((b) => ({ ...b, [key]: null }));
+    }
+  }
 
   return (
     <>
@@ -1610,48 +1693,123 @@ function VendorDocsModal({ vendor, onClose }) {
             fontSize: 14,
             fontWeight: 700,
             color: t.white,
-            marginBottom: 14,
+            marginBottom: 4,
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
           }}
         >
-          Documents — {vendor.businessName || vendor.name || "Vendor"}
+          Documents — {vendor.businessName || vendor.name || vendor.ownerName || "Vendor"}
           <Btn onClick={onClose} style={{ padding: "3px 10px", fontSize: 11 }}>Close</Btn>
         </div>
+        {!canManage && (
+          <div style={{ fontSize: 11, color: t.muted, marginBottom: 10 }}>
+            Legacy vendor — replace/delete disabled (no applicationId on record).
+          </div>
+        )}
         <div style={{ display: "grid", gap: 14 }}>
-          {items.map((it) => (
-            <div key={it.key} style={{ borderTop: `1px solid ${t.border}`, paddingTop: 10 }}>
-              <div style={{ fontSize: 11, color: t.muted, marginBottom: 6, fontWeight: 600 }}>
-                {it.label}
+          {DOC_KEYS.map(({ key, label }) => {
+            const path = paths[key];
+            const url = urls[key];
+            const err = errs[key];
+            const status = busy[key];
+            return (
+              <div
+                key={key}
+                style={{ borderTop: `1px solid ${t.border}`, paddingTop: 10 }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: 6,
+                    flexWrap: "wrap",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: t.muted, fontWeight: 600 }}>
+                    {label}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {url && (
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ textDecoration: "none" }}
+                      >
+                        <Btn style={{ padding: "3px 9px", fontSize: 10 }}>
+                          Open
+                        </Btn>
+                      </a>
+                    )}
+                    {canManage && (
+                      <>
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          ref={(el) => (fileRefs.current[key] = el)}
+                          style={{ display: "none" }}
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            e.target.value = "";
+                            handleReplace(key, f);
+                          }}
+                        />
+                        <Btn
+                          style={{ padding: "3px 9px", fontSize: 10 }}
+                          disabled={status === "uploading"}
+                          onClick={() => fileRefs.current[key]?.click()}
+                        >
+                          {status === "uploading"
+                            ? "Uploading…"
+                            : path
+                            ? "Replace"
+                            : "Upload"}
+                        </Btn>
+                        {path && (
+                          <Btn
+                            variant="danger"
+                            style={{ padding: "3px 9px", fontSize: 10 }}
+                            disabled={status === "deleting"}
+                            onClick={() => handleDelete(key)}
+                          >
+                            {status === "deleting" ? "Deleting…" : "Delete"}
+                          </Btn>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+                {err ? (
+                  <div style={{ fontSize: 12, color: "#dc2626" }}>
+                    {err}
+                  </div>
+                ) : !path ? (
+                  <div style={{ fontSize: 12, color: t.muted, fontStyle: "italic" }}>
+                    Not provided
+                  </div>
+                ) : !url ? (
+                  <div style={{ fontSize: 12, color: t.muted }}>Loading…</div>
+                ) : (
+                  <a href={url} target="_blank" rel="noreferrer">
+                    <img
+                      src={url}
+                      alt={label}
+                      style={{
+                        maxWidth: "100%",
+                        maxHeight: 360,
+                        borderRadius: 8,
+                        border: `1px solid ${t.border}`,
+                        display: "block",
+                      }}
+                    />
+                  </a>
+                )}
               </div>
-              {!it.path ? (
-                <div style={{ fontSize: 12, color: t.muted, fontStyle: "italic" }}>
-                  Not provided
-                </div>
-              ) : errs[it.key] ? (
-                <div style={{ fontSize: 12, color: "#dc2626" }}>
-                  Failed to load: {errs[it.key]}
-                </div>
-              ) : !urls[it.key] ? (
-                <div style={{ fontSize: 12, color: t.muted }}>Loading…</div>
-              ) : (
-                <a href={urls[it.key]} target="_blank" rel="noreferrer">
-                  <img
-                    src={urls[it.key]}
-                    alt={it.label}
-                    style={{
-                      maxWidth: "100%",
-                      maxHeight: 360,
-                      borderRadius: 8,
-                      border: `1px solid ${t.border}`,
-                      display: "block",
-                    }}
-                  />
-                </a>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </>
