@@ -37,6 +37,8 @@ import {
   deleteVendor,
   approveKYC,
   rejectKYC,
+  restoreVendor,
+  permanentlyDeleteVendor,
   getUsers,
   blockUser,
   unbanUser,
@@ -48,6 +50,8 @@ import {
   flagReview,
   removeReview,
   restoreReview,
+  restoreDeletedReview,
+  permanentlyDeleteReview,
   getNotifications,
   sendNotification,
   getAuditLog,
@@ -683,6 +687,17 @@ function NotificationPanel({ open, onClose }) {
     setSending(true);
     try {
       await sendNotification({ ...form, sentBy: adminUser?.email || "admin" });
+      await logAudit(
+        "broadcast_sent",
+        "notification",
+        form.topic || "all",
+        {
+          entityName: form.title,
+          topic: form.topic || "all",
+          body: form.body,
+        },
+        adminUser,
+      );
       setSent(true);
       setTimeout(() => setSent(false), 3000);
       setForm({ title: "", body: "", topic: "all" });
@@ -1321,7 +1336,10 @@ function Dashboard() {
         />
         <KCard
           label="Active Vendors"
-          value={vendors.filter((v) => v.status === "verified").length || "—"}
+          value={
+            vendors.filter((v) => !v.deletedAt && v.status === "verified")
+              .length || "—"
+          }
           delta="Verified only"
           accent="#22c55e"
         />
@@ -1339,7 +1357,9 @@ function Dashboard() {
         />
         <KCard
           label="Pending KYC"
-          value={vendors.filter((v) => v.kyc === "pending").length}
+          value={
+            vendors.filter((v) => !v.deletedAt && v.kyc === "pending").length
+          }
           delta="Needs review"
           accent="#f59e0b"
         />
@@ -1545,7 +1565,7 @@ function Dashboard() {
         </Card>
         <Card>
           <CT>Top Vendors</CT>
-          {vendors.slice(0, 4).map((v, i) => (
+          {vendors.filter((v) => !v.deletedAt).slice(0, 4).map((v, i) => (
             <div
               key={v.id || i}
               style={{
@@ -1590,12 +1610,13 @@ function Users() {
         u.phone?.includes(search)),
   );
 
+  const userLabel = (u) => u.name || u.email || u.phone || "user";
   const handleBlock = async (u) => {
-    if (!window.confirm(`Block ${u.name}?`)) return;
-    await blockUser(u.id, "Blocked by admin", adminUser);
+    if (!window.confirm(`Block ${userLabel(u)}?`)) return;
+    await blockUser(u.id, "Blocked by admin", adminUser, userLabel(u));
   };
   const handleUnban = async (u) => {
-    await unbanUser(u.id, adminUser);
+    await unbanUser(u.id, adminUser, userLabel(u));
   };
 
   return (
@@ -1954,40 +1975,86 @@ function Vendors() {
   // Fall back across all three so they appear in the table and search.
   const vendorName = (v) =>
     v.name || v.businessName || v.ownerName || "";
-  const filtered = vendors.filter(
-    (v) =>
-      (catF === "All" || v.category === catF) &&
-      (kycTab === "all" || v.kyc === kycTab) &&
-      vendorName(v).toLowerCase().includes(search.toLowerCase()),
-  );
+  // Active = not soft-deleted. Deleted view shown only when kycTab === "deleted".
+  const filtered = vendors.filter((v) => {
+    const isDeleted = Boolean(v.deletedAt);
+    if (kycTab === "deleted" ? !isDeleted : isDeleted) return false;
+    if (catF !== "All" && v.category !== catF) return false;
+    if (kycTab !== "all" && kycTab !== "deleted" && v.kyc !== kycTab) return false;
+    if (search && !vendorName(v).toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
 
   const handleVerify = async (v) => {
-    await approveKYC(v.id, adminUser);
+    await approveKYC(v.id, adminUser, vendorName(v));
   };
   const handleReject = async () => {
-    await rejectKYC(rejectModal.id, rejectReason, adminUser);
+    await rejectKYC(
+      rejectModal.id,
+      rejectReason,
+      adminUser,
+      vendorName(rejectModal),
+    );
     setRejectModal(null);
     setRejectReason("");
   };
   const handleSuspend = async (v) => {
-    if (!window.confirm(`Suspend ${vendorName(v) || "vendor"}?`)) return;
-    await updateVendor(v.id, { status: "suspended" });
-    await logAudit("vendor_suspended", "vendor", v.id, {}, adminUser);
-  };
-  const handleDelete = async (v) => {
     const label = vendorName(v) || "vendor";
-    if (!window.confirm(`Permanently delete ${label}?`)) return;
-    await deleteVendor(v.id);
+    if (!window.confirm(`Suspend ${label}?`)) return;
+    await updateVendor(v.id, { status: "suspended" });
     await logAudit(
-      "vendor_deleted",
+      "vendor_suspended",
       "vendor",
       v.id,
-      { name: label },
+      { entityName: label },
+      adminUser,
+    );
+  };
+  // Soft delete (default Delete action).
+  const handleDelete = async (v) => {
+    const label = vendorName(v) || "vendor";
+    if (!window.confirm(`Move ${label} to Deleted? You can restore later.`)) return;
+    await deleteVendor(v.id, adminUser);
+    await logAudit(
+      "vendor_soft_deleted",
+      "vendor",
+      v.id,
+      { entityName: label },
+      adminUser,
+    );
+  };
+  const handleRestore = async (v) => {
+    const label = vendorName(v) || "vendor";
+    await restoreVendor(v.id);
+    await logAudit(
+      "vendor_restored",
+      "vendor",
+      v.id,
+      { entityName: label },
+      adminUser,
+    );
+  };
+  const handlePermanentDelete = async (v) => {
+    const label = vendorName(v) || "vendor";
+    if (
+      !window.confirm(
+        `Permanently delete ${label}? This wipes the record and all uploaded documents from R2. CANNOT be undone.`,
+      )
+    )
+      return;
+    await permanentlyDeleteVendor(v.id);
+    await logAudit(
+      "vendor_hard_deleted",
+      "vendor",
+      v.id,
+      { entityName: label, applicationId: v.applicationId || null },
       adminUser,
     );
   };
 
-  const pendingCount = vendors.filter((v) => v.kyc === "pending").length;
+  const activeVendors = vendors.filter((v) => !v.deletedAt);
+  const pendingCount = activeVendors.filter((v) => v.kyc === "pending").length;
+  const deletedCount = vendors.filter((v) => v.deletedAt).length;
 
   return (
     <>
@@ -2128,6 +2195,7 @@ function Vendors() {
           ["pending", "Pending KYC"],
           ["approved", "Approved"],
           ["rejected", "Rejected"],
+          ["deleted", `Deleted${deletedCount ? ` (${deletedCount})` : ""}`],
         ].map(([k, l]) => (
           <Chip
             key={k}
@@ -2189,54 +2257,81 @@ function Vendors() {
                 </TD>
                 <TD>
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                    {v.kyc === "pending" && (
+                    {v.deletedAt ? (
                       <>
+                        <Btn
+                          style={{ padding: "3px 7px", fontSize: 10 }}
+                          onClick={() => setDocsVendor(v)}
+                        >
+                          Docs
+                        </Btn>
                         <Btn
                           variant="success"
                           style={{ padding: "3px 7px", fontSize: 10 }}
-                          onClick={() => handleVerify(v)}
+                          onClick={() => handleRestore(v)}
                         >
-                          Approve
+                          Restore
                         </Btn>
                         <Btn
                           variant="danger"
                           style={{ padding: "3px 7px", fontSize: 10 }}
-                          onClick={() => setRejectModal(v)}
+                          onClick={() => handlePermanentDelete(v)}
                         >
-                          Reject
+                          Delete forever
+                        </Btn>
+                      </>
+                    ) : (
+                      <>
+                        {v.kyc === "pending" && (
+                          <>
+                            <Btn
+                              variant="success"
+                              style={{ padding: "3px 7px", fontSize: 10 }}
+                              onClick={() => handleVerify(v)}
+                            >
+                              Approve
+                            </Btn>
+                            <Btn
+                              variant="danger"
+                              style={{ padding: "3px 7px", fontSize: 10 }}
+                              onClick={() => setRejectModal(v)}
+                            >
+                              Reject
+                            </Btn>
+                          </>
+                        )}
+                        {v.status === "verified" && (
+                          <Btn
+                            variant="danger"
+                            style={{ padding: "3px 7px", fontSize: 10 }}
+                            onClick={() => handleSuspend(v)}
+                          >
+                            Suspend
+                          </Btn>
+                        )}
+                        {v.status !== "verified" && v.kyc !== "pending" && (
+                          <Btn
+                            variant="success"
+                            style={{ padding: "3px 7px", fontSize: 10 }}
+                            onClick={() => handleVerify(v)}
+                          >
+                            Verify
+                          </Btn>
+                        )}
+                        <Btn
+                          style={{ padding: "3px 7px", fontSize: 10 }}
+                          onClick={() => setDocsVendor(v)}
+                        >
+                          Docs
+                        </Btn>
+                        <Btn
+                          style={{ padding: "3px 7px", fontSize: 10 }}
+                          onClick={() => handleDelete(v)}
+                        >
+                          Delete
                         </Btn>
                       </>
                     )}
-                    {v.status === "verified" && (
-                      <Btn
-                        variant="danger"
-                        style={{ padding: "3px 7px", fontSize: 10 }}
-                        onClick={() => handleSuspend(v)}
-                      >
-                        Suspend
-                      </Btn>
-                    )}
-                    {v.status !== "verified" && v.kyc !== "pending" && (
-                      <Btn
-                        variant="success"
-                        style={{ padding: "3px 7px", fontSize: 10 }}
-                        onClick={() => handleVerify(v)}
-                      >
-                        Verify
-                      </Btn>
-                    )}
-                    <Btn
-                      style={{ padding: "3px 7px", fontSize: 10 }}
-                      onClick={() => setDocsVendor(v)}
-                    >
-                      Docs
-                    </Btn>
-                    <Btn
-                      style={{ padding: "3px 7px", fontSize: 10 }}
-                      onClick={() => handleDelete(v)}
-                    >
-                      Delete
-                    </Btn>
                   </div>
                 </TD>
               </tr>
@@ -2268,7 +2363,15 @@ function Requests() {
   const handleCancel = async (r) => {
     if (!window.confirm("Cancel this request?")) return;
     await updateRequestStatus(r.id, "cancelled");
-    await logAudit("request_cancelled", "request", r.id, {}, adminUser);
+    await logAudit(
+      "request_cancelled",
+      "request",
+      r.id,
+      {
+        entityName: r.vendorName || r.vendor || r.customerName || r.cust || r.id,
+      },
+      adminUser,
+    );
   };
 
   const TlDot = ({ state }) => {
@@ -2728,20 +2831,95 @@ function Finance() {
 
 function Reviews_Page() {
   const t = useTheme();
-  const { reviews } = useAdmin();
+  const { reviews, adminUser } = useAdmin();
   const [filter, setFilter] = useState("all");
-  const filtered = reviews.filter(
-    (r) => filter === "all" || r.status === filter,
-  );
+  const reviewLabel = (r) =>
+    `${r.vendorName || r.vendor || "vendor"} / ${r.userName || r.user || "user"}`;
+  const deletedReviewsCount = reviews.filter((r) => r.deletedAt).length;
+  const filtered = reviews.filter((r) => {
+    const isDeleted = Boolean(r.deletedAt);
+    if (filter === "deleted") return isDeleted;
+    if (isDeleted) return false;
+    if (filter === "all") return true;
+    return r.status === filter;
+  });
+
+  const handleFlag = async (r) => {
+    await flagReview(r.id);
+    await logAudit(
+      "review_flagged",
+      "review",
+      r.id,
+      { entityName: reviewLabel(r) },
+      adminUser,
+    );
+  };
+  const handleUnflag = async (r) => {
+    await restoreReview(r.id);
+    await logAudit(
+      "review_unflagged",
+      "review",
+      r.id,
+      { entityName: reviewLabel(r) },
+      adminUser,
+    );
+  };
+  const handleSoftRemove = async (r) => {
+    if (!window.confirm(`Move this review to Deleted? You can restore later.`))
+      return;
+    await removeReview(r.id, adminUser);
+    await logAudit(
+      "review_soft_deleted",
+      "review",
+      r.id,
+      { entityName: reviewLabel(r) },
+      adminUser,
+    );
+  };
+  const handleRestore = async (r) => {
+    await restoreDeletedReview(r.id);
+    await logAudit(
+      "review_restored",
+      "review",
+      r.id,
+      { entityName: reviewLabel(r) },
+      adminUser,
+    );
+  };
+  const handlePermanent = async (r) => {
+    if (
+      !window.confirm(
+        `Permanently delete this review? CANNOT be undone.`,
+      )
+    )
+      return;
+    await permanentlyDeleteReview(r.id);
+    await logAudit(
+      "review_hard_deleted",
+      "review",
+      r.id,
+      { entityName: reviewLabel(r) },
+      adminUser,
+    );
+  };
+
   return (
     <>
       <div style={{ marginBottom: 11 }}>
-        {["all", "visible", "flagged"].map((f) => (
+        {[
+          ["all", "All"],
+          ["visible", "Visible"],
+          ["flagged", "Flagged"],
+          [
+            "deleted",
+            `Deleted${deletedReviewsCount ? ` (${deletedReviewsCount})` : ""}`,
+          ],
+        ].map(([k, l]) => (
           <Chip
-            key={f}
-            label={f.charAt(0).toUpperCase() + f.slice(1)}
-            active={filter === f}
-            onClick={() => setFilter(f)}
+            key={k}
+            label={l}
+            active={filter === k}
+            onClick={() => setFilter(k)}
           />
         ))}
       </div>
@@ -2784,33 +2962,54 @@ function Reviews_Page() {
                     "—"}
                 </TD>
                 <TD>
-                  <Badge status={r.status || "visible"} />
+                  <Badge status={r.deletedAt ? "deleted" : r.status || "visible"} />
                 </TD>
                 <TD>
-                  <div style={{ display: "flex", gap: 5 }}>
-                    {r.status === "flagged" ? (
-                      <Btn
-                        variant="success"
-                        style={{ padding: "2px 7px", fontSize: 10 }}
-                        onClick={() => restoreReview(r.id)}
-                      >
-                        Restore
-                      </Btn>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    {r.deletedAt ? (
+                      <>
+                        <Btn
+                          variant="success"
+                          style={{ padding: "2px 7px", fontSize: 10 }}
+                          onClick={() => handleRestore(r)}
+                        >
+                          Restore
+                        </Btn>
+                        <Btn
+                          variant="danger"
+                          style={{ padding: "2px 7px", fontSize: 10 }}
+                          onClick={() => handlePermanent(r)}
+                        >
+                          Delete forever
+                        </Btn>
+                      </>
                     ) : (
-                      <Btn
-                        style={{ padding: "2px 7px", fontSize: 10 }}
-                        onClick={() => flagReview(r.id)}
-                      >
-                        Flag
-                      </Btn>
+                      <>
+                        {r.status === "flagged" ? (
+                          <Btn
+                            variant="success"
+                            style={{ padding: "2px 7px", fontSize: 10 }}
+                            onClick={() => handleUnflag(r)}
+                          >
+                            Unflag
+                          </Btn>
+                        ) : (
+                          <Btn
+                            style={{ padding: "2px 7px", fontSize: 10 }}
+                            onClick={() => handleFlag(r)}
+                          >
+                            Flag
+                          </Btn>
+                        )}
+                        <Btn
+                          variant="danger"
+                          style={{ padding: "2px 7px", fontSize: 10 }}
+                          onClick={() => handleSoftRemove(r)}
+                        >
+                          Delete
+                        </Btn>
+                      </>
                     )}
-                    <Btn
-                      variant="danger"
-                      style={{ padding: "2px 7px", fontSize: 10 }}
-                      onClick={() => removeReview(r.id)}
-                    >
-                      Remove
-                    </Btn>
                   </div>
                 </TD>
               </tr>
@@ -2822,36 +3021,85 @@ function Reviews_Page() {
   );
 }
 
+// Map raw audit action strings to human-readable labels + a glyph + a
+// semantic color. Anything not listed falls through to a sensible default
+// derived from the action keyword (created/approved → green, deleted/
+// rejected → red, soft_deleted/restored → blue/amber, etc.).
+const AUDIT_ACTION_META = {
+  vendor_created: { label: "Vendor created", icon: "+", color: "#22c55e" },
+  vendor_kyc_approved: { label: "KYC approved", icon: "✓", color: "#22c55e" },
+  vendor_kyc_rejected: { label: "KYC rejected", icon: "✕", color: "#ef4444" },
+  vendor_suspended: { label: "Vendor suspended", icon: "⏸", color: "#f59e0b" },
+  vendor_soft_deleted: { label: "Vendor moved to Deleted", icon: "🗑", color: "#f59e0b" },
+  vendor_restored: { label: "Vendor restored", icon: "↻", color: "#3b82f6" },
+  vendor_hard_deleted: { label: "Vendor permanently deleted", icon: "✕", color: "#ef4444" },
+  vendor_doc_replaced: { label: "Vendor doc replaced", icon: "↻", color: "#3b82f6" },
+  vendor_doc_deleted: { label: "Vendor doc deleted", icon: "🗑", color: "#f59e0b" },
+  user_blocked: { label: "User blocked", icon: "🚫", color: "#ef4444" },
+  user_unbanned: { label: "User unbanned", icon: "✓", color: "#22c55e" },
+  review_flagged: { label: "Review flagged", icon: "⚐", color: "#f59e0b" },
+  review_unflagged: { label: "Review unflagged", icon: "✓", color: "#22c55e" },
+  review_soft_deleted: { label: "Review moved to Deleted", icon: "🗑", color: "#f59e0b" },
+  review_restored: { label: "Review restored", icon: "↻", color: "#3b82f6" },
+  review_hard_deleted: { label: "Review permanently deleted", icon: "✕", color: "#ef4444" },
+  request_cancelled: { label: "Request cancelled", icon: "⏹", color: "#f59e0b" },
+  broadcast_sent: { label: "Notification sent", icon: "🔔", color: "#3b82f6" },
+  config_changed: { label: "Config updated", icon: "⚙", color: "#a855f7" },
+};
+
+function auditActionMeta(action) {
+  const m = AUDIT_ACTION_META[action];
+  if (m) return m;
+  const a = String(action || "");
+  if (/(_hard_deleted|_rejected|_blocked)$/.test(a))
+    return { label: a.replace(/_/g, " "), icon: "✕", color: "#ef4444" };
+  if (/(_soft_deleted|_suspended|_flagged|_cancelled)$/.test(a))
+    return { label: a.replace(/_/g, " "), icon: "🗑", color: "#f59e0b" };
+  if (/(_restored|_unflagged|_unbanned|_replaced)$/.test(a))
+    return { label: a.replace(/_/g, " "), icon: "↻", color: "#3b82f6" };
+  if (/(_created|_approved|_added)$/.test(a))
+    return { label: a.replace(/_/g, " "), icon: "✓", color: "#22c55e" };
+  return { label: a.replace(/_/g, " ") || "Event", icon: "▶", color: "#6b7280" };
+}
+
 function AuditLog_Page() {
   const t = useTheme();
   const { auditLogData } = useAdmin();
   const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const actionTypes = [
     "all",
     "vendor",
     "user",
     "request",
+    "review",
     "notification",
     "config",
   ];
-  const filtered = auditLogData.filter(
-    (a) => filter === "all" || a.entityType === filter,
-  );
-  const colorMap = {
-    vendor_created: "#22c55e",
-    vendor_kyc_approved: "#22c55e",
-    vendor_kyc_rejected: "#ef4444",
-    vendor_suspended: "#ef4444",
-    vendor_deleted: "#ef4444",
-    user_blocked: "#ef4444",
-    user_unbanned: "#22c55e",
-    request_cancelled: "#f59e0b",
-    broadcast_sent: "#3b82f6",
-    config_changed: "#a855f7",
+  const matchesSearch = (a) => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return (
+      (a.entityName || "").toLowerCase().includes(s) ||
+      (a.action || "").toLowerCase().includes(s) ||
+      (a.adminName || "").toLowerCase().includes(s) ||
+      (a.entityId || "").toLowerCase().includes(s)
+    );
   };
+  const filtered = auditLogData.filter(
+    (a) =>
+      (filter === "all" || a.entityType === filter) && matchesSearch(a),
+  );
 
   return (
     <>
+      <div style={{ marginBottom: 9 }}>
+        <SBar
+          placeholder="Search by entity name, action, admin…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
       <div style={{ marginBottom: 11 }}>
         {actionTypes.map((f) => (
           <Chip
@@ -2868,7 +3116,11 @@ function AuditLog_Page() {
           <Empty icon="📜" text="No audit records" />
         ) : (
           filtered.map((a, i) => {
-            const color = colorMap[a.action] || "#6b7280";
+            const meta = auditActionMeta(a.action);
+            const name =
+              a.entityName || a.details?.entityName || a.entityId || "—";
+            const reason = a.details?.reason;
+            const ts = a.timestamp?.toDate?.();
             return (
               <div
                 key={a.id || i}
@@ -2885,8 +3137,8 @@ function AuditLog_Page() {
                     width: 26,
                     height: 26,
                     borderRadius: 7,
-                    background: `${color}18`,
-                    color,
+                    background: `${meta.color}18`,
+                    color: meta.color,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -2894,18 +3146,43 @@ function AuditLog_Page() {
                     flexShrink: 0,
                   }}
                 >
-                  ▶
+                  {meta.icon}
                 </div>
-                <div>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div
-                    style={{ fontSize: 12, color: t.text1, fontWeight: 500 }}
+                    style={{
+                      fontSize: 12,
+                      color: t.text1,
+                      fontWeight: 600,
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 6,
+                      alignItems: "baseline",
+                    }}
                   >
-                    {a.action?.replace(/_/g, " ")} —{" "}
-                    <span style={{ color: t.orange }}>{a.entityId}</span>
+                    <span>{meta.label}</span>
+                    <span style={{ color: t.orange, fontWeight: 500 }}>
+                      {name}
+                    </span>
                   </div>
+                  {reason && (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: t.text2,
+                        marginTop: 2,
+                        fontStyle: "italic",
+                      }}
+                    >
+                      Reason: {reason}
+                    </div>
+                  )}
                   <div style={{ fontSize: 10, color: t.muted, marginTop: 2 }}>
-                    By {a.adminName || "Admin"} ·{" "}
-                    {a.timestamp?.toDate?.()?.toLocaleString() || "—"}
+                    By {a.adminName || "Admin"}
+                    {ts ? ` · ${ts.toLocaleString()}` : ""}
+                    {a.entityId && a.entityId !== name
+                      ? ` · id: ${a.entityId}`
+                      : ""}
                   </div>
                 </div>
               </div>
@@ -2944,7 +3221,13 @@ function Settings_Page() {
     setSaving(true);
     try {
       await saveAppConfig(config);
-      await logAudit("config_changed", "config", "main", config, adminUser);
+      await logAudit(
+        "config_changed",
+        "config",
+        "main",
+        { entityName: "App Config", changes: config },
+        adminUser,
+      );
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } finally {
@@ -3630,7 +3913,7 @@ export default function AdminPanel() {
 
   // Badge counts
   const badges = {
-    pendingKyc: vendors.filter((v) => v.kyc === "pending").length,
+    pendingKyc: vendors.filter((v) => !v.deletedAt && v.kyc === "pending").length,
     activeSos: sos.filter((s) => !s.resolved).length,
     flaggedReviews: reviews.filter((r) => r.status === "flagged").length,
     unreadNotifs: notifications.filter((n) => !n.read).length,

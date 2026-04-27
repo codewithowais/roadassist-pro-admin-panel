@@ -70,6 +70,15 @@ export const adminLogin = (email, pass) =>
 export const adminLogout = () => fbSignOut(auth);
 
 // ── Audit logger ─────────────────────────────────────────────────
+// Convention for callers:
+//   - action: snake_case verb describing what happened. Reserved suffixes:
+//             *_soft_deleted, *_restored, *_hard_deleted, *_created,
+//             *_updated, *_approved, *_rejected.
+//   - entityType: "vendor" | "user" | "request" | "review" | "config" | etc.
+//   - entityId: Firestore doc id of the entity.
+//   - details: free-form object. ALWAYS include entityName when known so the
+//              audit log is readable without a join — vendor businessName,
+//              user email, etc.
 export async function logAudit(
   action,
   entityType,
@@ -81,6 +90,7 @@ export async function logAudit(
     action,
     entityType,
     entityId,
+    entityName: details?.entityName || null,
     details,
     adminUid: adminUser?.uid || "unknown",
     adminName: adminUser?.email || "Admin",
@@ -106,8 +116,26 @@ export const addVendor = (data) =>
 export const updateVendor = (id, data) =>
   updateDoc(doc(db, COLS.vendors, id), data);
 
-export const deleteVendor = async (id) => {
-  // Best-effort: also delete this applicant's R2 docs folder.
+// Soft delete — preserves the record + R2 docs so it can be restored.
+// The Firestore document stays; queries filter by deletedAt client-side.
+export const deleteVendor = (id, adminUser) =>
+  updateDoc(doc(db, COLS.vendors, id), {
+    deletedAt: serverTimestamp(),
+    deletedBy: adminUser?.uid || "unknown",
+    deletedByEmail: adminUser?.email || null,
+  });
+
+// Restore from soft delete.
+export const restoreVendor = (id) =>
+  updateDoc(doc(db, COLS.vendors, id), {
+    deletedAt: null,
+    deletedBy: null,
+    deletedByEmail: null,
+  });
+
+// Hard delete — permanent. Wipes Firestore record AND R2 docs folder.
+// Use only from a trash/deleted view after confirmation.
+export const permanentlyDeleteVendor = async (id) => {
   try {
     const snap = await getDoc(doc(db, COLS.vendors, id));
     const applicationId = snap.data()?.applicationId;
@@ -130,21 +158,33 @@ export const deleteVendor = async (id) => {
   return deleteDoc(doc(db, COLS.vendors, id));
 };
 
-export const approveKYC = async (id, adminUser) => {
+export const approveKYC = async (id, adminUser, entityName) => {
   await updateDoc(doc(db, COLS.vendors, id), {
     kyc: "approved",
     status: "verified",
     verifiedAt: serverTimestamp(),
   });
-  await logAudit("vendor_kyc_approved", "vendor", id, {}, adminUser);
+  await logAudit(
+    "vendor_kyc_approved",
+    "vendor",
+    id,
+    { entityName: entityName || null },
+    adminUser,
+  );
 };
 
-export const rejectKYC = async (id, reason, adminUser) => {
+export const rejectKYC = async (id, reason, adminUser, entityName) => {
   await updateDoc(doc(db, COLS.vendors, id), {
     kyc: "rejected",
     kycRejectedReason: reason,
   });
-  await logAudit("vendor_kyc_rejected", "vendor", id, { reason }, adminUser);
+  await logAudit(
+    "vendor_kyc_rejected",
+    "vendor",
+    id,
+    { entityName: entityName || null, reason },
+    adminUser,
+  );
 };
 
 // ── User CRUD ─────────────────────────────────────────────────────
@@ -154,21 +194,33 @@ export const getUsers = (cb) =>
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 
-export const blockUser = async (id, reason, adminUser) => {
+export const blockUser = async (id, reason, adminUser, entityName) => {
   await updateDoc(doc(db, COLS.users, id), {
     status: "blocked",
     blockedReason: reason,
     blockedAt: serverTimestamp(),
   });
-  await logAudit("user_blocked", "user", id, { reason }, adminUser);
+  await logAudit(
+    "user_blocked",
+    "user",
+    id,
+    { entityName: entityName || null, reason },
+    adminUser,
+  );
 };
 
-export const unbanUser = async (id, adminUser) => {
+export const unbanUser = async (id, adminUser, entityName) => {
   await updateDoc(doc(db, COLS.users, id), {
     status: "active",
     blockedReason: null,
   });
-  await logAudit("user_unbanned", "user", id, {}, adminUser);
+  await logAudit(
+    "user_unbanned",
+    "user",
+    id,
+    { entityName: entityName || null },
+    adminUser,
+  );
 };
 
 // ── Service requests ──────────────────────────────────────────────
@@ -208,11 +260,34 @@ export const getReviews = (cb) =>
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 
+// Moderation: flag = "this is bad, hide from public"; unflag = "fine, show again".
+// These are NOT delete/restore — see soft delete below.
 export const flagReview = (id) =>
   updateDoc(doc(db, COLS.reviews, id), { status: "flagged" });
-export const removeReview = (id) => deleteDoc(doc(db, COLS.reviews, id));
-export const restoreReview = (id) =>
+export const unflagReview = (id) =>
   updateDoc(doc(db, COLS.reviews, id), { status: "visible" });
+// Back-compat alias for older call sites.
+export const restoreReview = unflagReview;
+
+// Soft delete (preserves the record).
+export const removeReview = (id, adminUser) =>
+  updateDoc(doc(db, COLS.reviews, id), {
+    deletedAt: serverTimestamp(),
+    deletedBy: adminUser?.uid || "unknown",
+    deletedByEmail: adminUser?.email || null,
+  });
+
+// Restore from soft delete.
+export const restoreDeletedReview = (id) =>
+  updateDoc(doc(db, COLS.reviews, id), {
+    deletedAt: null,
+    deletedBy: null,
+    deletedByEmail: null,
+  });
+
+// Hard delete — final.
+export const permanentlyDeleteReview = (id) =>
+  deleteDoc(doc(db, COLS.reviews, id));
 
 // ── Notifications (stored in Firestore + sent via Cloud Function) ──
 export const getNotifications = (cb) =>
