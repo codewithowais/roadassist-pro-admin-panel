@@ -107,10 +107,17 @@ export const getVendors = (cb) =>
 
 export const addVendor = (data) =>
   addDoc(collection(db, COLS.vendors), {
-    ...data,
-    createdAt: serverTimestamp(),
+    // Defaults — applied only when caller didn't specify.
     status: "pending",
     kyc: "pending",
+    isVerified: false,
+    isOpen: false,
+    rating: 0,
+    reviewCount: 0,
+    deletedAt: null,
+    ...data,
+    // Always-server-controlled.
+    createdAt: serverTimestamp(),
   });
 
 export const updateVendor = (id, data) =>

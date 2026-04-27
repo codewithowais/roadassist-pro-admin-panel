@@ -671,6 +671,145 @@ function Empty({ icon = "📭", text = "No data found" }) {
   );
 }
 
+// Reset to page 1 whenever the filtered list shrinks or the user changes
+// filters in a way that makes the current page out of range. Use the
+// `resetKey` arg (typically a stringified set of filter values) to opt in.
+function usePagination(items, defaultPageSize = 25, resetKey = "") {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(defaultPageSize);
+  useEffect(() => {
+    setPage(1);
+  }, [resetKey, pageSize]);
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * pageSize;
+  const slice = items.slice(start, start + pageSize);
+  return {
+    page: safePage,
+    setPage,
+    pageSize,
+    setPageSize,
+    total,
+    totalPages,
+    slice,
+    rangeStart: total === 0 ? 0 : start + 1,
+    rangeEnd: Math.min(start + pageSize, total),
+  };
+}
+
+function Pager({
+  page,
+  setPage,
+  pageSize,
+  setPageSize,
+  total,
+  totalPages,
+  rangeStart,
+  rangeEnd,
+}) {
+  const t = useTheme();
+  if (total === 0) return null;
+  const sizes = [25, 50, 100, 200];
+  const btn = (label, onClick, disabled) => (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        padding: "4px 9px",
+        fontSize: 11,
+        fontWeight: 600,
+        background: disabled ? "transparent" : t.input,
+        color: disabled ? t.muted : t.text1,
+        border: `1px solid ${t.border}`,
+        borderRadius: 6,
+        cursor: disabled ? "not-allowed" : "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+  // Compact page-window: first, current ± 2, last, with ellipses.
+  const win = new Set([1, totalPages, page - 1, page, page + 1]);
+  const pages = Array.from(win)
+    .filter((p) => p >= 1 && p <= totalPages)
+    .sort((a, b) => a - b);
+  const items = [];
+  for (let i = 0; i < pages.length; i++) {
+    if (i > 0 && pages[i] - pages[i - 1] > 1) items.push("…");
+    items.push(pages[i]);
+  }
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "10px 4px 0",
+        fontSize: 11,
+        color: t.muted,
+        flexWrap: "wrap",
+      }}
+    >
+      <span>
+        {rangeStart}–{rangeEnd} of {total}
+      </span>
+      <div style={{ flex: 1 }} />
+      <span>per page:</span>
+      <select
+        value={pageSize}
+        onChange={(e) => setPageSize(Number(e.target.value))}
+        style={{
+          background: t.input,
+          color: t.text1,
+          border: `1px solid ${t.border}`,
+          borderRadius: 6,
+          padding: "3px 6px",
+          fontSize: 11,
+        }}
+      >
+        {sizes.map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        {btn("‹", () => setPage(page - 1), page <= 1)}
+        {items.map((p, i) =>
+          p === "…" ? (
+            <span
+              key={`gap-${i}`}
+              style={{ padding: "4px 6px", color: t.muted, fontSize: 11 }}
+            >
+              …
+            </span>
+          ) : (
+            <button
+              key={p}
+              onClick={() => setPage(p)}
+              style={{
+                padding: "4px 9px",
+                fontSize: 11,
+                fontWeight: 600,
+                background: p === page ? t.orange : t.input,
+                color: p === page ? "#fff" : t.text1,
+                border: `1px solid ${p === page ? t.orange : t.border}`,
+                borderRadius: 6,
+                cursor: "pointer",
+                minWidth: 28,
+              }}
+            >
+              {p}
+            </button>
+          ),
+        )}
+        {btn("›", () => setPage(page + 1), page >= totalPages)}
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────
 //  NOTIFICATION PANEL (slide-in from right)
 // ─────────────────────────────────────────────────────────────────
@@ -943,39 +1082,56 @@ function NotificationPanel({ open, onClose }) {
 // ─────────────────────────────────────────────────────────────────
 //  ADD VENDOR MODAL
 // ─────────────────────────────────────────────────────────────────
-function AddVendorModal({ onClose }) {
+// Used for both Add and Edit. Pass `existing` (a vendor doc) to enter edit
+// mode — title, button label, submit action and field prefill all switch.
+function AddVendorModal({ onClose, existing }) {
   const t = useTheme();
   const { adminUser } = useAdmin();
+  const editing = Boolean(existing);
   // Stable per-modal UUID — used as the R2 prefix for any docs uploaded
-  // before the Firestore vendor doc is written. We persist this id on the
-  // vendor record so future replace/delete operations can find the folder.
+  // before the Firestore vendor doc is written. In edit mode we reuse the
+  // vendor's existing applicationId so file replacements land in the same
+  // folder.
   const [applicationId] = useState(() => {
+    if (existing?.applicationId) return existing.applicationId;
     if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
       const r = (Math.random() * 16) | 0;
       return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
     });
   });
-  const [form, setForm] = useState({
-    name: "",
-    category: "",
-    phone: "",
-    whatsapp: "",
-    city: "",
-    address: "",
-    lat: "",
-    lng: "",
-    operatingHours: "9am-9pm",
-    costRange: "",
-    status: "pending",
-  });
-  const [uploads, setUploads] = useState({ cnic: null, license: null, photo: null });
+  const [form, setForm] = useState(() => ({
+    name:
+      existing?.name || existing?.businessName || existing?.ownerName || "",
+    category: existing?.category || "",
+    phone: existing?.phone || "",
+    whatsapp: existing?.whatsapp || "",
+    city: existing?.city || "",
+    address: existing?.address || "",
+    lat: existing?.lat != null ? String(existing.lat) : "",
+    lng: existing?.lng != null ? String(existing.lng) : "",
+    operatingHours: existing?.operatingHours || "9am-9pm",
+    costRange: existing?.costRange || "",
+    status: existing?.status || "pending",
+  }));
+  // R2 paths — prefilled from existing.documents in edit mode. We keep a
+  // snapshot of the original paths so cancel/submit can correctly clean up
+  // orphans without touching the admin's still-valid existing files.
+  const initialUploads = {
+    cnic: existing?.documents?.cnicPath || null,
+    license: existing?.documents?.licensePath || null,
+    photo: existing?.documents?.photoPath || null,
+  };
+  const [uploads, setUploads] = useState(initialUploads);
+  const originalUploadsRef = useRef(initialUploads);
   const [progress, setProgress] = useState({ cnic: 0, license: 0, photo: 0 });
   const [uploadErrs, setUploadErrs] = useState({});
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const fileRefs = useRef({});
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const isR2Path = (p) => p && !/^https?:/i.test(p);
 
   const handleFile = async (key, file) => {
     if (!file) return;
@@ -985,11 +1141,14 @@ function AddVendorModal({ onClose }) {
       const newPath = await uploadFile(file, applicationId, key, (pct) =>
         setProgress((p) => ({ ...p, [key]: pct })),
       );
-      // If a previous file at a different ext was uploaded for this slot,
-      // clean it up so we don't leave orphans in R2.
-      const oldPath = uploads[key];
-      if (oldPath && oldPath !== newPath) {
-        try { await deleteVendorDoc(oldPath); } catch {}
+      // Clean up the orphan if this slot already had an interim upload
+      // (from earlier in this same modal session). The *original* upload
+      // is left alone until submit confirms — otherwise cancelling would
+      // lose data.
+      const prev = uploads[key];
+      const original = originalUploadsRef.current[key];
+      if (prev && prev !== original && prev !== newPath && isR2Path(prev)) {
+        try { await deleteVendorDoc(prev); } catch {}
       }
       setUploads((p) => ({ ...p, [key]: newPath }));
     } catch (e) {
@@ -1004,9 +1163,15 @@ function AddVendorModal({ onClose }) {
     }
     setLoading(true);
     try {
-      await addVendor({
+      // If admin picks "verified" in the Status field, treat the vendor as
+      // KYC-approved too — they're skipping the queue.
+      const isVerified = form.status === "verified";
+      const payload = {
         ...form,
+        businessName: form.name,
         applicationId,
+        kyc: isVerified ? "approved" : existing?.kyc || "pending",
+        isVerified,
         lat: parseFloat(form.lat) || 24.8607,
         lng: parseFloat(form.lng) || 67.0011,
         documents: {
@@ -1014,14 +1179,37 @@ function AddVendorModal({ onClose }) {
           licensePath: uploads.license,
           photoPath: uploads.photo,
         },
-      });
-      await logAudit(
-        "vendor_created",
-        "vendor",
-        form.name,
-        { name: form.name, applicationId },
-        adminUser,
-      );
+      };
+      if (editing) {
+        await updateVendor(existing.id, payload);
+        await logAudit(
+          "vendor_updated",
+          "vendor",
+          existing.id,
+          { entityName: form.name, applicationId },
+          adminUser,
+        );
+      } else {
+        await addVendor(payload);
+        await logAudit(
+          "vendor_created",
+          "vendor",
+          form.name,
+          { entityName: form.name, applicationId },
+          adminUser,
+        );
+      }
+      // After successful save, replaced originals are now safe to delete.
+      const original = originalUploadsRef.current;
+      for (const key of ["cnic", "license", "photo"]) {
+        if (
+          original[key] &&
+          isR2Path(original[key]) &&
+          original[key] !== uploads[key]
+        ) {
+          try { await deleteVendorDoc(original[key]); } catch {}
+        }
+      }
       onClose();
     } catch (e) {
       setErr(e.message);
@@ -1030,11 +1218,17 @@ function AddVendorModal({ onClose }) {
     }
   };
 
-  // If admin cancels after uploading files, clean up R2 orphans.
+  // If admin cancels, only delete files uploaded *this session* (i.e. paths
+  // that differ from the snapshot at modal open). The originals stay intact.
   const handleCancel = async () => {
-    const orphaned = Object.values(uploads).filter(Boolean);
+    const original = originalUploadsRef.current;
+    const cleanup = [];
+    for (const key of ["cnic", "license", "photo"]) {
+      const cur = uploads[key];
+      if (cur && cur !== original[key] && isR2Path(cur)) cleanup.push(cur);
+    }
     onClose();
-    for (const p of orphaned) {
+    for (const p of cleanup) {
       try { await deleteVendorDoc(p); } catch {}
     }
   };
@@ -1075,7 +1269,7 @@ function AddVendorModal({ onClose }) {
           }}
         >
           <div style={{ fontSize: 14, fontWeight: 700, color: t.white }}>
-            Add New Vendor
+            {editing ? "Edit Vendor" : "Add New Vendor"}
           </div>
           <button
             onClick={handleCancel}
@@ -1288,7 +1482,11 @@ function AddVendorModal({ onClose }) {
         >
           <Btn onClick={handleCancel}>Cancel</Btn>
           <Btn variant="primary" onClick={handleSubmit} disabled={loading}>
-            {loading ? "Saving…" : "Add Vendor"}
+            {loading
+              ? "Saving…"
+              : editing
+              ? "Save Changes"
+              : "Add Vendor"}
           </Btn>
         </div>
       </div>
@@ -1619,6 +1817,8 @@ function Users() {
     await unbanUser(u.id, adminUser, userLabel(u));
   };
 
+  const pager = usePagination(filtered, 25, `${search}|${filter}`);
+
   return (
     <>
       <SBar
@@ -1642,7 +1842,7 @@ function Users() {
         ) : (
           <Tbl
             headers={["User", "Phone", "City", "Jobs", "Status", "Actions"]}
-            rows={filtered.map((u) => (
+            rows={pager.slice.map((u) => (
               <tr key={u.id}>
                 <TD>
                   <div
@@ -1691,6 +1891,7 @@ function Users() {
             ))}
           />
         )}
+        <Pager {...pager} />
       </Card>
     </>
   );
@@ -1967,6 +2168,7 @@ function Vendors() {
   const [catF, setCatF] = useState("All");
   const [kycTab, setKycTab] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
+  const [editVendor, setEditVendor] = useState(null);
   const [rejectModal, setRejectModal] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
   const [docsVendor, setDocsVendor] = useState(null);
@@ -2056,9 +2258,17 @@ function Vendors() {
   const pendingCount = activeVendors.filter((v) => v.kyc === "pending").length;
   const deletedCount = vendors.filter((v) => v.deletedAt).length;
 
+  const pager = usePagination(filtered, 25, `${search}|${catF}|${kycTab}`);
+
   return (
     <>
       {showAdd && <AddVendorModal onClose={() => setShowAdd(false)} />}
+      {editVendor && (
+        <AddVendorModal
+          existing={editVendor}
+          onClose={() => setEditVendor(null)}
+        />
+      )}
       {docsVendor && (
         <VendorDocsModal vendor={docsVendor} onClose={() => setDocsVendor(null)} />
       )}
@@ -2220,7 +2430,7 @@ function Vendors() {
               "Source",
               "Actions",
             ]}
-            rows={filtered.map((v) => (
+            rows={pager.slice.map((v) => (
               <tr key={v.id}>
                 <TD>
                   <div
@@ -2320,6 +2530,12 @@ function Vendors() {
                         )}
                         <Btn
                           style={{ padding: "3px 7px", fontSize: 10 }}
+                          onClick={() => setEditVendor(v)}
+                        >
+                          Edit
+                        </Btn>
+                        <Btn
+                          style={{ padding: "3px 7px", fontSize: 10 }}
                           onClick={() => setDocsVendor(v)}
                         >
                           Docs
@@ -2338,6 +2554,7 @@ function Vendors() {
             ))}
           />
         )}
+        <Pager {...pager} />
       </Card>
     </>
   );
@@ -2843,6 +3060,7 @@ function Reviews_Page() {
     if (filter === "all") return true;
     return r.status === filter;
   });
+  const pager = usePagination(filtered, 25, filter);
 
   const handleFlag = async (r) => {
     await flagReview(r.id);
@@ -2937,7 +3155,7 @@ function Reviews_Page() {
               "Status",
               "Actions",
             ]}
-            rows={filtered.map((r, i) => (
+            rows={pager.slice.map((r, i) => (
               <tr key={r.id || i}>
                 <TD style={{ fontWeight: 600, color: t.text1, fontSize: 11 }}>
                   {r.vendorName || r.vendor || "—"}
@@ -3016,6 +3234,7 @@ function Reviews_Page() {
             ))}
           />
         )}
+        <Pager {...pager} />
       </Card>
     </>
   );
@@ -3090,6 +3309,7 @@ function AuditLog_Page() {
     (a) =>
       (filter === "all" || a.entityType === filter) && matchesSearch(a),
   );
+  const pager = usePagination(filtered, 25, `${filter}|${search}`);
 
   return (
     <>
@@ -3115,7 +3335,7 @@ function AuditLog_Page() {
         {filtered.length === 0 ? (
           <Empty icon="📜" text="No audit records" />
         ) : (
-          filtered.map((a, i) => {
+          pager.slice.map((a, i) => {
             const meta = auditActionMeta(a.action);
             const name =
               a.entityName || a.details?.entityName || a.entityId || "—";
@@ -3189,6 +3409,7 @@ function AuditLog_Page() {
             );
           })
         )}
+        <Pager {...pager} />
       </Card>
     </>
   );
