@@ -44,6 +44,13 @@ import {
   deleteUser,
   restoreUser,
   permanentlyDeleteUser,
+  getAdminUsers,
+  updateAdminUser,
+  removeAdminUser,
+  getZones,
+  addZone,
+  updateZone,
+  deleteZone,
   getUsers,
   blockUser,
   unbanUser,
@@ -3058,6 +3065,22 @@ function Requests() {
     );
   };
 
+  const handleStatusChange = async (r, next) => {
+    if (next === r.status) return;
+    await updateRequestStatus(r.id, next);
+    await logAudit(
+      "request_status_changed",
+      "request",
+      r.id,
+      {
+        entityName: r.vendorName || r.vendor || r.customerName || r.cust || r.id,
+        from: r.status || "—",
+        to: next,
+      },
+      adminUser,
+    );
+  };
+
   const TlDot = ({ state }) => {
     const bg =
       state === "done" ? "#22c55e" : state === "active" ? t.orange : t.border;
@@ -3236,10 +3259,24 @@ function Requests() {
                 </div>
               ))}
             </div>
+            <div style={{ marginBottom: 8 }}>
+              <FG label="Change Status">
+                <Sel
+                  value={selected.status || "pending"}
+                  onChange={(e) => handleStatusChange(selected, e.target.value)}
+                >
+                  <option value="pending">Pending</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="completed">Completed</option>
+                  <option value="cancelled">Cancelled</option>
+                </Sel>
+              </FG>
+            </div>
             <div style={{ display: "flex", gap: 7 }}>
               <Btn
                 style={{ flex: 1, justifyContent: "center", fontSize: 11 }}
-                onClick={() => updateRequestStatus(selected.id, "completed")}
+                onClick={() => handleStatusChange(selected, "completed")}
               >
                 Mark Complete
               </Btn>
@@ -4166,18 +4203,71 @@ function Settings_Page() {
           </Card>
         </div>
       )}
-      {tab === "zones" && (
-        <Card>
-          <CT>Service Zones — Karachi</CT>
-          {[
-            ["DHA / Clifton", 42, "7.2 min", "verified"],
-            ["Gulshan / Nazimabad", 38, "9.1 min", "verified"],
-            ["PECHS / Saddar", 29, "10.5 min", "pending"],
-            ["Korangi / Landhi", 14, "18.3 min", "rejected"],
-            ["North Karachi", 8, "22.1 min", "rejected"],
-          ].map(([z, v, r, c]) => (
+      {tab === "zones" && <ZonesTab />}
+      {tab === "admins" && <AdminUsersTab />}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Settings -> Zones (dynamic, Firestore-backed)
+// ─────────────────────────────────────────────────────────────────
+function ZonesTab() {
+  const t = useTheme();
+  const { adminUser } = useAdmin();
+  const [zones, setZones] = useState([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editZone, setEditZone] = useState(null);
+  useEffect(() => getZones(setZones), []);
+
+  const handleDelete = async (z) => {
+    if (!window.confirm(`Delete zone "${z.name}"? This cannot be undone.`))
+      return;
+    await deleteZone(z.id);
+    await logAudit(
+      "zone_deleted",
+      "zone",
+      z.id,
+      { entityName: z.name },
+      adminUser,
+    );
+  };
+
+  return (
+    <>
+      {showAdd && <ZoneModal onClose={() => setShowAdd(false)} />}
+      {editZone && (
+        <ZoneModal
+          existing={editZone}
+          onClose={() => setEditZone(null)}
+        />
+      )}
+      <Card>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 14,
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <CT>Service Zones</CT>
+          <Btn
+            variant="primary"
+            style={{ fontSize: 11 }}
+            onClick={() => setShowAdd(true)}
+          >
+            + Add Zone
+          </Btn>
+        </div>
+        {zones.length === 0 ? (
+          <Empty icon="🗺" text="No zones yet — add one above." />
+        ) : (
+          zones.map((z) => (
             <div
-              key={z}
+              key={z.id}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -4187,111 +4277,567 @@ function Settings_Page() {
                 flexWrap: "wrap",
               }}
             >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: t.text1 }}>
-                  {z}
+              <div style={{ flex: 1, minWidth: 140 }}>
+                <div
+                  style={{ fontSize: 13, fontWeight: 600, color: t.text1 }}
+                >
+                  {z.name || "—"}
                 </div>
                 <div style={{ fontSize: 11, color: t.muted }}>
-                  Avg response: {r}
+                  Avg response: {z.avgResponseMins || 0} min
                 </div>
               </div>
               <Badge
-                status={c}
+                status={
+                  z.coverage === "high"
+                    ? "verified"
+                    : z.coverage === "medium"
+                    ? "pending"
+                    : "rejected"
+                }
                 text={
-                  c === "verified" ? "High" : c === "pending" ? "Medium" : "Low"
+                  z.coverage === "high"
+                    ? "High"
+                    : z.coverage === "medium"
+                    ? "Medium"
+                    : "Low"
                 }
               />
-              <span style={{ color: t.orange, fontWeight: 600, fontSize: 13 }}>
-                {v} vendors
+              <span
+                style={{ color: t.orange, fontWeight: 600, fontSize: 13 }}
+              >
+                {z.vendorCount || 0} vendors
               </span>
-              <Btn style={{ padding: "3px 8px", fontSize: 10 }}>Manage</Btn>
+              <Btn
+                style={{ padding: "3px 8px", fontSize: 10 }}
+                onClick={() => setEditZone(z)}
+              >
+                Edit
+              </Btn>
+              <Btn
+                variant="danger"
+                style={{ padding: "3px 8px", fontSize: 10 }}
+                onClick={() => handleDelete(z)}
+              >
+                Delete
+              </Btn>
             </div>
-          ))}
-        </Card>
+          ))
+        )}
+      </Card>
+    </>
+  );
+}
+
+function ZoneModal({ onClose, existing }) {
+  const t = useTheme();
+  const { adminUser } = useAdmin();
+  const editing = Boolean(existing);
+  const [form, setForm] = useState(() => ({
+    name: existing?.name || "",
+    coverage: existing?.coverage || "high",
+    avgResponseMins: existing?.avgResponseMins ?? 0,
+    vendorCount: existing?.vendorCount ?? 0,
+  }));
+  const [errs, setErrs] = useState({});
+  const [loading, setLoading] = useState(false);
+  const set = (k, v) => {
+    setForm((p) => ({ ...p, [k]: v }));
+    setErrs((p) => ({ ...p, [k]: undefined }));
+  };
+  const validate = () => {
+    const e = {};
+    e.name = check(form.name, V.required("Zone name required"), V.maxLength(120));
+    e.avgResponseMins = V.nonNegativeInt(form.avgResponseMins);
+    e.vendorCount = V.nonNegativeInt(form.vendorCount);
+    for (const k of Object.keys(e)) if (!e[k]) delete e[k];
+    setErrs(e);
+    return Object.keys(e).length === 0;
+  };
+  const save = async () => {
+    if (!validate()) return;
+    setLoading(true);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        coverage: form.coverage,
+        avgResponseMins: Number(form.avgResponseMins) || 0,
+        vendorCount: Number(form.vendorCount) || 0,
+      };
+      if (editing) {
+        await updateZone(existing.id, payload);
+        await logAudit(
+          "zone_updated",
+          "zone",
+          existing.id,
+          { entityName: payload.name },
+          adminUser,
+        );
+      } else {
+        const ref = await addZone(payload);
+        await logAudit(
+          "zone_created",
+          "zone",
+          ref.id,
+          { entityName: payload.name },
+          adminUser,
+        );
+      }
+      onClose();
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{ position: "fixed", inset: 0, background: "#0006", zIndex: 1000 }}
+      />
+      <div
+        className="ra-modal"
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%,-50%)",
+          width: 440,
+          maxWidth: "95vw",
+          background: t.sidebar,
+          borderRadius: 16,
+          zIndex: 1001,
+          padding: 20,
+          border: `1px solid ${t.border}`,
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 700, color: t.white, marginBottom: 14 }}>
+          {editing ? "Edit Zone" : "Add Zone"}
+        </div>
+        <div className="ra-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ gridColumn: "1/-1" }}>
+            <FG label="Zone Name *" error={errs.name}>
+              <Inp
+                value={form.name}
+                onChange={(e) => set("name", e.target.value)}
+                placeholder="DHA / Clifton"
+                maxLength={120}
+                invalid={!!errs.name}
+              />
+            </FG>
+          </div>
+          <FG label="Coverage Level">
+            <Sel
+              value={form.coverage}
+              onChange={(e) => set("coverage", e.target.value)}
+            >
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </Sel>
+          </FG>
+          <FG label="Avg Response (min)" error={errs.avgResponseMins}>
+            <Inp
+              value={form.avgResponseMins}
+              onChange={(e) => set("avgResponseMins", e.target.value.replace(/\D/g, ""))}
+              type="number"
+              inputMode="numeric"
+              invalid={!!errs.avgResponseMins}
+            />
+          </FG>
+          <FG label="Vendor Count" error={errs.vendorCount}>
+            <Inp
+              value={form.vendorCount}
+              onChange={(e) => set("vendorCount", e.target.value.replace(/\D/g, ""))}
+              type="number"
+              inputMode="numeric"
+              invalid={!!errs.vendorCount}
+            />
+          </FG>
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" onClick={save} disabled={loading}>
+            {loading ? "Saving…" : editing ? "Save Changes" : "Add Zone"}
+          </Btn>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Settings -> Admin Users (dynamic, role-gated)
+//  Rules:
+//   - Anyone can view.
+//   - Only superadmin or manager can invite/edit/disable/delete.
+//   - The superadmin row is read-only (not editable, not deletable).
+//   - Cannot edit/disable/delete YOURSELF (lockout protection).
+// ─────────────────────────────────────────────────────────────────
+function AdminUsersTab() {
+  const t = useTheme();
+  const { adminUser, adminRole } = useAdmin();
+  const [admins, setAdmins] = useState([]);
+  const [showInvite, setShowInvite] = useState(false);
+  const [editAdmin, setEditAdmin] = useState(null);
+  useEffect(() => getAdminUsers(setAdmins), []);
+
+  const canManage = adminRole === "superadmin" || adminRole === "manager";
+
+  const isSuperadmin = (a) => a.role === "superadmin";
+  const isSelf = (a) => a.id === adminUser?.uid;
+
+  const handleToggleDisabled = async (a) => {
+    const next = !a.disabled;
+    if (!window.confirm(`${next ? "Disable" : "Enable"} ${a.name || a.email}?`))
+      return;
+    await updateAdminUser(a.id, { disabled: next });
+    await logAudit(
+      next ? "admin_disabled" : "admin_enabled",
+      "admin",
+      a.id,
+      { entityName: a.name || a.email },
+      adminUser,
+    );
+  };
+  const handleDelete = async (a) => {
+    if (
+      !window.confirm(
+        `Remove admin access for ${a.name || a.email}? Their Firebase Auth account stays but they can no longer access this panel.`,
+      )
+    )
+      return;
+    await removeAdminUser(a.id);
+    await logAudit(
+      "admin_removed",
+      "admin",
+      a.id,
+      { entityName: a.name || a.email },
+      adminUser,
+    );
+  };
+
+  return (
+    <>
+      {showInvite && (
+        <AdminUserModal onClose={() => setShowInvite(false)} />
       )}
-      {tab === "admins" && (
-        <Card>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: 14,
-            }}
-          >
-            <CT>Admin Users</CT>
-            <Btn variant="primary" style={{ fontSize: 11 }}>
+      {editAdmin && (
+        <AdminUserModal
+          existing={editAdmin}
+          onClose={() => setEditAdmin(null)}
+        />
+      )}
+      <Card>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 14,
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <CT>Admin Users</CT>
+          {canManage && (
+            <Btn
+              variant="primary"
+              style={{ fontSize: 11 }}
+              onClick={() => setShowInvite(true)}
+            >
               + Invite Admin
             </Btn>
+          )}
+        </div>
+        {!canManage && (
+          <div
+            style={{
+              fontSize: 11,
+              color: t.muted,
+              marginBottom: 12,
+              fontStyle: "italic",
+            }}
+          >
+            Read-only — invite/edit requires superadmin or manager role.
           </div>
+        )}
+        {admins.length === 0 ? (
+          <Empty icon="👥" text="No admins" />
+        ) : (
           <Tbl
-            headers={[
-              "Admin",
-              "Email",
-              "Role",
-              "Last Login",
-              "Status",
-              "Actions",
-            ]}
-            rows={[
-              [
-                "SA",
-                "Super Admin",
-                "admin@roadassist.pk",
-                "superadmin",
-                "Just now",
-                "active",
-                null,
-              ],
-              [
-                "OM",
-                "Ops Manager",
-                "ops@roadassist.pk",
-                "manager",
-                "2h ago",
-                "active",
-                "#3b82f6",
-              ],
-              [
-                "SU",
-                "Support Agent",
-                "support@roadassist.pk",
-                "support",
-                "1d ago",
-                "active",
-                "#22c55e",
-              ],
-            ].map(([av, n, e, r, l, s, c]) => (
-              <tr key={n}>
-                <TD>
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 7 }}
-                  >
-                    <Av initials={av} color={c} size={24} />
-                    <span style={{ fontSize: 12 }}>{n}</span>
-                  </div>
-                </TD>
-                <TD style={{ fontSize: 11, color: t.muted }}>{e}</TD>
-                <TD>
-                  <Badge status={r} />
-                </TD>
-                <TD style={{ fontSize: 10, color: t.muted }}>{l}</TD>
-                <TD>
-                  <Badge status={s} />
-                </TD>
-                <TD>
-                  <Btn
-                    variant="danger"
-                    style={{ padding: "3px 8px", fontSize: 10 }}
-                  >
-                    Deactivate
-                  </Btn>
-                </TD>
-              </tr>
-            ))}
+            headers={["Admin", "Email", "Role", "Status", "Actions"]}
+            rows={admins.map((a) => {
+              const locked = isSuperadmin(a);
+              const self = isSelf(a);
+              return (
+                <tr key={a.id}>
+                  <TD>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 7 }}
+                    >
+                      <Av
+                        initials={(a.name || a.email || "A")
+                          .slice(0, 2)
+                          .toUpperCase()}
+                        size={24}
+                      />
+                      <span style={{ fontSize: 12 }}>
+                        {a.name || a.email || "—"}
+                        {self && (
+                          <span
+                            style={{
+                              fontSize: 9,
+                              color: t.orange,
+                              marginLeft: 6,
+                              fontWeight: 600,
+                            }}
+                          >
+                            you
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  </TD>
+                  <TD style={{ fontSize: 11, color: t.muted }}>{a.email || "—"}</TD>
+                  <TD>
+                    <Badge status={a.role} />
+                  </TD>
+                  <TD>
+                    <Badge
+                      status={a.disabled ? "blocked" : "active"}
+                      text={a.disabled ? "Disabled" : "Active"}
+                    />
+                  </TD>
+                  <TD>
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                      {locked ? (
+                        <span style={{ fontSize: 10, color: t.muted }}>
+                          Main user — locked
+                        </span>
+                      ) : !canManage || self ? (
+                        <span style={{ fontSize: 10, color: t.muted }}>—</span>
+                      ) : (
+                        <>
+                          <Btn
+                            style={{ padding: "3px 8px", fontSize: 10 }}
+                            onClick={() => setEditAdmin(a)}
+                          >
+                            Edit
+                          </Btn>
+                          <Btn
+                            variant={a.disabled ? "success" : "danger"}
+                            style={{ padding: "3px 8px", fontSize: 10 }}
+                            onClick={() => handleToggleDisabled(a)}
+                          >
+                            {a.disabled ? "Enable" : "Disable"}
+                          </Btn>
+                          <Btn
+                            variant="danger"
+                            style={{ padding: "3px 8px", fontSize: 10 }}
+                            onClick={() => handleDelete(a)}
+                          >
+                            Remove
+                          </Btn>
+                        </>
+                      )}
+                    </div>
+                  </TD>
+                </tr>
+              );
+            })}
           />
-        </Card>
-      )}
+        )}
+      </Card>
+    </>
+  );
+}
+
+function AdminUserModal({ onClose, existing }) {
+  const t = useTheme();
+  const { adminUser } = useAdmin();
+  const editing = Boolean(existing);
+  const [form, setForm] = useState(() => ({
+    name: existing?.name || "",
+    email: existing?.email || "",
+    password: "",
+    role: existing?.role || "manager",
+  }));
+  const [errs, setErrs] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [serverErr, setServerErr] = useState("");
+  const set = (k, v) => {
+    setForm((p) => ({ ...p, [k]: v }));
+    setErrs((p) => ({ ...p, [k]: undefined }));
+  };
+
+  const validate = () => {
+    const e = {};
+    e.name = V.maxLength(120, "Too long")(form.name);
+    if (!editing) {
+      e.email = V.emailRequired(form.email);
+      if (!form.password || form.password.length < 6)
+        e.password = "Password must be at least 6 characters";
+    }
+    if (!["manager", "support", "viewer"].includes(form.role))
+      e.role = "Invalid role";
+    for (const k of Object.keys(e)) if (!e[k]) delete e[k];
+    setErrs(e);
+    return Object.keys(e).length === 0;
+  };
+
+  const save = async () => {
+    if (!validate()) return;
+    setServerErr("");
+    setLoading(true);
+    try {
+      if (editing) {
+        await updateAdminUser(existing.id, {
+          name: form.name || null,
+          role: form.role,
+        });
+        await logAudit(
+          "admin_updated",
+          "admin",
+          existing.id,
+          { entityName: form.name || existing.email, role: form.role },
+          adminUser,
+        );
+      } else {
+        const idToken = await adminUser?.getIdToken?.();
+        const res = await fetch("/api/admin-users/invite", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            email: form.email.trim(),
+            password: form.password,
+            name: form.name.trim() || null,
+            role: form.role,
+          }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.error || `HTTP ${res.status}`);
+        }
+        const { uid } = await res.json();
+        await logAudit(
+          "admin_invited",
+          "admin",
+          uid,
+          { entityName: form.name || form.email, role: form.role },
+          adminUser,
+        );
+      }
+      onClose();
+    } catch (e) {
+      setServerErr(e.message || "Save failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{ position: "fixed", inset: 0, background: "#0006", zIndex: 1000 }}
+      />
+      <div
+        className="ra-modal"
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%,-50%)",
+          width: 480,
+          maxWidth: "95vw",
+          background: t.sidebar,
+          borderRadius: 16,
+          zIndex: 1001,
+          padding: 20,
+          border: `1px solid ${t.border}`,
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 700, color: t.white, marginBottom: 14 }}>
+          {editing ? "Edit Admin" : "Invite Admin"}
+        </div>
+        {serverErr && (
+          <div
+            style={{
+              background: "#fef2f2",
+              border: "1px solid #fecaca",
+              borderRadius: 8,
+              padding: "8px 12px",
+              fontSize: 12,
+              color: "#dc2626",
+              marginBottom: 12,
+            }}
+          >
+            {serverErr}
+          </div>
+        )}
+        <div className="ra-form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <FG label="Name" error={errs.name}>
+            <Inp
+              value={form.name}
+              onChange={(e) => set("name", e.target.value)}
+              placeholder="Ali Khan"
+              maxLength={120}
+              autoComplete="name"
+              invalid={!!errs.name}
+            />
+          </FG>
+          <FG label="Role" error={errs.role}>
+            <Sel
+              value={form.role}
+              onChange={(e) => set("role", e.target.value)}
+            >
+              <option value="manager">Manager</option>
+              <option value="support">Support</option>
+              <option value="viewer">Viewer</option>
+            </Sel>
+          </FG>
+          {!editing && (
+            <>
+              <FG label="Email *" error={errs.email}>
+                <Inp
+                  value={form.email}
+                  onChange={(e) => set("email", e.target.value)}
+                  placeholder="user@example.com"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  maxLength={120}
+                  invalid={!!errs.email}
+                />
+              </FG>
+              <FG label="Temporary Password *" error={errs.password}>
+                <Inp
+                  value={form.password}
+                  onChange={(e) => set("password", e.target.value)}
+                  placeholder="At least 6 characters"
+                  type="password"
+                  autoComplete="new-password"
+                  invalid={!!errs.password}
+                />
+              </FG>
+            </>
+          )}
+        </div>
+        {editing && (
+          <div style={{ fontSize: 11, color: t.muted, marginTop: 8, fontStyle: "italic" }}>
+            Email cannot be changed. To reset password, use Firebase Console.
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" onClick={save} disabled={loading}>
+            {loading ? "Saving…" : editing ? "Save Changes" : "Send Invite"}
+          </Btn>
+        </div>
+      </div>
     </>
   );
 }
@@ -4676,6 +5222,8 @@ export default function AdminPanel() {
     notifications,
     auditLogData,
     adminUser,
+    adminProfile,
+    adminRole: adminProfile?.role || null,
   };
 
   if (authLoading)
