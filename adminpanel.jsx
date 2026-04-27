@@ -39,6 +39,11 @@ import {
   rejectKYC,
   restoreVendor,
   permanentlyDeleteVendor,
+  addUser,
+  updateUser,
+  deleteUser,
+  restoreUser,
+  permanentlyDeleteUser,
   getUsers,
   blockUser,
   unbanUser,
@@ -840,16 +845,26 @@ function NotificationPanel({ open, onClose }) {
   const [tab, setTab] = useState("history");
   const [form, setForm] = useState({ title: "", body: "", topic: "all" });
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [result, setResult] = useState(null); // { ok: bool, msg: string }
 
   const handleSend = async () => {
     const title = form.title.trim();
     const body = form.body.trim();
-    if (title.length < 3 || title.length > 100) return;
-    if (body.length < 3 || body.length > 500) return;
+    if (title.length < 3 || title.length > 100) {
+      setResult({ ok: false, msg: "Title must be 3–100 characters." });
+      return;
+    }
+    if (body.length < 3 || body.length > 500) {
+      setResult({ ok: false, msg: "Body must be 3–500 characters." });
+      return;
+    }
     setSending(true);
+    setResult(null);
     try {
-      await sendNotification({ ...form, sentBy: adminUser?.email || "admin" });
+      const r = await sendNotification({
+        ...form,
+        sentBy: adminUser?.email || "admin",
+      });
       await logAudit(
         "broadcast_sent",
         "notification",
@@ -858,12 +873,30 @@ function NotificationPanel({ open, onClose }) {
           entityName: form.title,
           topic: form.topic || "all",
           body: form.body,
+          deliveryStatus: r?.deliveryStatus,
         },
         adminUser,
       );
-      setSent(true);
-      setTimeout(() => setSent(false), 3000);
+      if (r?.deliveryStatus === "delivered" || r?.deliveryStatus === "delivered_legacy") {
+        setResult({
+          ok: true,
+          msg:
+            r.deliveryStatus === "delivered_legacy"
+              ? "Sent via legacy Cloud Function."
+              : "Saved and pushed to subscribers.",
+        });
+      } else {
+        setResult({
+          ok: false,
+          msg:
+            "Saved to history but push failed: " +
+            (r?.deliveryError || "unknown error"),
+        });
+      }
+      setTimeout(() => setResult(null), 5000);
       setForm({ title: "", body: "", topic: "all" });
+    } catch (e) {
+      setResult({ ok: false, msg: e.message || "Send failed." });
     } finally {
       setSending(false);
     }
@@ -969,20 +1002,22 @@ function NotificationPanel({ open, onClose }) {
           {/* Send tab */}
           {tab === "send" && (
             <>
-              {sent && (
+              {result && (
                 <div
                   style={{
-                    background: "#dcfce7",
-                    border: "1px solid #bbf7d0",
+                    background: result.ok ? "#dcfce7" : "#fef2f2",
+                    border: `1px solid ${result.ok ? "#bbf7d0" : "#fecaca"}`,
                     borderRadius: 8,
                     padding: "10px 12px",
                     marginBottom: 12,
                     fontSize: 12,
-                    color: "#16a34a",
+                    color: result.ok ? "#16a34a" : "#dc2626",
                     fontWeight: 600,
+                    lineHeight: 1.4,
                   }}
                 >
-                  ✓ Notification sent successfully!
+                  {result.ok ? "✓ " : "⚠ "}
+                  {result.msg}
                 </div>
               )}
               <FG label="Title (max 100)">
@@ -1885,19 +1920,249 @@ function Dashboard() {
   );
 }
 
+// Used for both Add and Edit. Pass `existing` (a user doc) for edit mode.
+function AddUserModal({ onClose, existing }) {
+  const t = useTheme();
+  const { adminUser } = useAdmin();
+  const editing = Boolean(existing);
+  const [form, setForm] = useState(() => ({
+    name: existing?.name || "",
+    email: existing?.email || "",
+    phone: existing?.phone || "",
+    city: existing?.city || "",
+    status: existing?.status || "active",
+  }));
+  const [errs, setErrs] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => {
+    setForm((p) => ({ ...p, [k]: v }));
+    setErrs((p) => ({ ...p, [k]: undefined }));
+  };
+
+  const validateForm = () => {
+    const e = {};
+    e.name = check(
+      form.name,
+      V.required("Name is required"),
+      V.minLength(2, "Too short"),
+      V.maxLength(120, "Too long"),
+    );
+    e.phone = V.pakPhone(form.phone);
+    e.email = V.email(form.email);
+    if (!form.city) e.city = "Select a city";
+    for (const k of Object.keys(e)) if (!e[k]) delete e[k];
+    setErrs(e);
+    return Object.keys(e).length === 0;
+  };
+
+  const handleSubmit = async () => {
+    if (!validateForm()) {
+      setErr("Fix the highlighted fields and try again.");
+      return;
+    }
+    setErr("");
+    setLoading(true);
+    try {
+      if (editing) {
+        await updateUser(existing.id, form);
+        await logAudit(
+          "user_updated",
+          "user",
+          existing.id,
+          { entityName: form.name },
+          adminUser,
+        );
+      } else {
+        const ref = await addUser(form);
+        await logAudit(
+          "user_created",
+          "user",
+          ref.id,
+          { entityName: form.name },
+          adminUser,
+        );
+      }
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{ position: "fixed", inset: 0, background: "#0006", zIndex: 1000 }}
+      />
+      <div
+        className="ra-modal"
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%,-50%)",
+          width: 480,
+          maxWidth: "95vw",
+          background: t.sidebar,
+          borderRadius: 16,
+          zIndex: 1001,
+          overflow: "hidden",
+          border: `1px solid ${t.border}`,
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${t.border}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ fontSize: 14, fontWeight: 700, color: t.white }}>
+            {editing ? "Edit User" : "Add New User"}
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "none",
+              fontSize: 18,
+              color: t.text2,
+              cursor: "pointer",
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div style={{ padding: 20, maxHeight: "70vh", overflowY: "auto" }}>
+          {err && (
+            <div
+              style={{
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                borderRadius: 8,
+                padding: "8px 12px",
+                fontSize: 12,
+                color: "#dc2626",
+                marginBottom: 12,
+              }}
+            >
+              {err}
+            </div>
+          )}
+          <div
+            className="ra-form-grid"
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
+          >
+            <FG label="Full Name *" error={errs.name}>
+              <Inp
+                value={form.name}
+                onChange={(e) => set("name", e.target.value)}
+                placeholder="Ali Khan"
+                maxLength={120}
+                autoComplete="name"
+                invalid={!!errs.name}
+              />
+            </FG>
+            <FG label="Phone *" error={errs.phone}>
+              <Inp
+                value={form.phone}
+                onChange={(e) => set("phone", e.target.value)}
+                placeholder="+92 300 1234567"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                maxLength={20}
+                invalid={!!errs.phone}
+              />
+            </FG>
+            <FG label="Email" error={errs.email}>
+              <Inp
+                value={form.email}
+                onChange={(e) => set("email", e.target.value)}
+                placeholder="user@example.com"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                maxLength={120}
+                invalid={!!errs.email}
+              />
+            </FG>
+            <FG label="City *" error={errs.city}>
+              <Sel
+                value={form.city}
+                onChange={(e) => set("city", e.target.value)}
+              >
+                <option value="">Select…</option>
+                {CITIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </Sel>
+            </FG>
+            <FG label="Status">
+              <Sel
+                value={form.status}
+                onChange={(e) => set("status", e.target.value)}
+              >
+                <option value="active">Active</option>
+                <option value="blocked">Blocked</option>
+              </Sel>
+            </FG>
+          </div>
+        </div>
+        <div
+          style={{
+            padding: "14px 20px",
+            borderTop: `1px solid ${t.border}`,
+            display: "flex",
+            gap: 8,
+            justifyContent: "flex-end",
+          }}
+        >
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" onClick={handleSubmit} disabled={loading}>
+            {loading ? "Saving…" : editing ? "Save Changes" : "Add User"}
+          </Btn>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function Users() {
   const t = useTheme();
   const { users, adminUser } = useAdmin();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
-  const filtered = users.filter(
-    (u) =>
-      (filter === "all" || u.status === filter) &&
-      (u.name?.toLowerCase().includes(search.toLowerCase()) ||
-        u.phone?.includes(search)),
-  );
+  const [showAdd, setShowAdd] = useState(false);
+  const [editUser, setEditUser] = useState(null);
 
   const userLabel = (u) => u.name || u.email || u.phone || "user";
+  const deletedCount = users.filter((u) => u.deletedAt).length;
+
+  // Active = not soft-deleted. Deleted view shown only when filter === "deleted".
+  const filtered = users.filter((u) => {
+    const isDeleted = Boolean(u.deletedAt);
+    if (filter === "deleted" ? !isDeleted : isDeleted) return false;
+    if (filter !== "all" && filter !== "deleted" && u.status !== filter)
+      return false;
+    if (search) {
+      const s = search.toLowerCase();
+      const hit =
+        userLabel(u).toLowerCase().includes(s) ||
+        (u.phone || "").includes(search) ||
+        (u.email || "").toLowerCase().includes(s);
+      if (!hit) return false;
+    }
+    return true;
+  });
+
   const handleBlock = async (u) => {
     if (!window.confirm(`Block ${userLabel(u)}?`)) return;
     await blockUser(u.id, "Blocked by admin", adminUser, userLabel(u));
@@ -1905,23 +2170,90 @@ function Users() {
   const handleUnban = async (u) => {
     await unbanUser(u.id, adminUser, userLabel(u));
   };
+  const handleDelete = async (u) => {
+    if (!window.confirm(`Move ${userLabel(u)} to Deleted? You can restore later.`))
+      return;
+    await deleteUser(u.id, adminUser);
+    await logAudit(
+      "user_soft_deleted",
+      "user",
+      u.id,
+      { entityName: userLabel(u) },
+      adminUser,
+    );
+  };
+  const handleRestore = async (u) => {
+    await restoreUser(u.id);
+    await logAudit(
+      "user_restored",
+      "user",
+      u.id,
+      { entityName: userLabel(u) },
+      adminUser,
+    );
+  };
+  const handlePermanent = async (u) => {
+    if (
+      !window.confirm(
+        `Permanently delete ${userLabel(u)}? CANNOT be undone.`,
+      )
+    )
+      return;
+    await permanentlyDeleteUser(u.id);
+    await logAudit(
+      "user_hard_deleted",
+      "user",
+      u.id,
+      { entityName: userLabel(u) },
+      adminUser,
+    );
+  };
 
   const pager = usePagination(filtered, 25, `${search}|${filter}`);
 
   return (
     <>
-      <SBar
-        placeholder="Search by name or phone…"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
+      {showAdd && <AddUserModal onClose={() => setShowAdd(false)} />}
+      {editUser && (
+        <AddUserModal
+          existing={editUser}
+          onClose={() => setEditUser(null)}
+        />
+      )}
+      <div
+        style={{
+          display: "flex",
+          gap: 9,
+          marginBottom: 11,
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        <SBar
+          placeholder="Search by name, phone or email…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <Btn
+          variant="primary"
+          style={{ whiteSpace: "nowrap", marginBottom: 10 }}
+          onClick={() => setShowAdd(true)}
+        >
+          + Add User
+        </Btn>
+      </div>
       <div style={{ marginBottom: 11 }}>
-        {["all", "active", "blocked"].map((f) => (
+        {[
+          ["all", "All"],
+          ["active", "Active"],
+          ["blocked", "Blocked"],
+          ["deleted", `Deleted${deletedCount ? ` (${deletedCount})` : ""}`],
+        ].map(([k, l]) => (
           <Chip
-            key={f}
-            label={f.charAt(0).toUpperCase() + f.slice(1)}
-            active={filter === f}
-            onClick={() => setFilter(f)}
+            key={k}
+            label={l}
+            active={filter === k}
+            onClick={() => setFilter(k)}
           />
         ))}
       </div>
@@ -1938,10 +2270,10 @@ function Users() {
                     style={{ display: "flex", alignItems: "center", gap: 7 }}
                   >
                     <Av
-                      initials={(u.name || "U").slice(0, 2).toUpperCase()}
+                      initials={(userLabel(u) || "U").slice(0, 2).toUpperCase()}
                       size={26}
                     />
-                    {u.name || "—"}
+                    {userLabel(u)}
                   </div>
                 </TD>
                 <TD style={{ fontFamily: "monospace", fontSize: 11 }}>
@@ -1952,27 +2284,59 @@ function Users() {
                   {u.totalJobs || 0}
                 </TD>
                 <TD>
-                  <Badge status={u.status || "active"} />
+                  <Badge status={u.deletedAt ? "deleted" : u.status || "active"} />
                 </TD>
                 <TD>
-                  <div style={{ display: "flex", gap: 5 }}>
-                    <Btn style={{ padding: "3px 8px", fontSize: 10 }}>View</Btn>
-                    {(u.status || "active") === "active" ? (
-                      <Btn
-                        variant="danger"
-                        style={{ padding: "3px 8px", fontSize: 10 }}
-                        onClick={() => handleBlock(u)}
-                      >
-                        Block
-                      </Btn>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    {u.deletedAt ? (
+                      <>
+                        <Btn
+                          variant="success"
+                          style={{ padding: "3px 8px", fontSize: 10 }}
+                          onClick={() => handleRestore(u)}
+                        >
+                          Restore
+                        </Btn>
+                        <Btn
+                          variant="danger"
+                          style={{ padding: "3px 8px", fontSize: 10 }}
+                          onClick={() => handlePermanent(u)}
+                        >
+                          Delete forever
+                        </Btn>
+                      </>
                     ) : (
-                      <Btn
-                        variant="success"
-                        style={{ padding: "3px 8px", fontSize: 10 }}
-                        onClick={() => handleUnban(u)}
-                      >
-                        Unban
-                      </Btn>
+                      <>
+                        <Btn
+                          style={{ padding: "3px 8px", fontSize: 10 }}
+                          onClick={() => setEditUser(u)}
+                        >
+                          Edit
+                        </Btn>
+                        {(u.status || "active") === "active" ? (
+                          <Btn
+                            variant="danger"
+                            style={{ padding: "3px 8px", fontSize: 10 }}
+                            onClick={() => handleBlock(u)}
+                          >
+                            Block
+                          </Btn>
+                        ) : (
+                          <Btn
+                            variant="success"
+                            style={{ padding: "3px 8px", fontSize: 10 }}
+                            onClick={() => handleUnban(u)}
+                          >
+                            Unban
+                          </Btn>
+                        )}
+                        <Btn
+                          style={{ padding: "3px 8px", fontSize: 10 }}
+                          onClick={() => handleDelete(u)}
+                        >
+                          Delete
+                        </Btn>
+                      </>
                     )}
                   </div>
                 </TD>

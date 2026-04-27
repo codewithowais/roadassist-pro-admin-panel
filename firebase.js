@@ -201,6 +201,37 @@ export const getUsers = (cb) =>
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 
+export const addUser = (data) =>
+  addDoc(collection(db, COLS.users), {
+    status: "active",
+    deletedAt: null,
+    totalJobs: 0,
+    ...data,
+    createdAt: serverTimestamp(),
+  });
+
+export const updateUser = (id, data) =>
+  updateDoc(doc(db, COLS.users, id), data);
+
+// Soft delete — preserves the record + history.
+export const deleteUser = (id, adminUser) =>
+  updateDoc(doc(db, COLS.users, id), {
+    deletedAt: serverTimestamp(),
+    deletedBy: adminUser?.uid || "unknown",
+    deletedByEmail: adminUser?.email || null,
+  });
+
+export const restoreUser = (id) =>
+  updateDoc(doc(db, COLS.users, id), {
+    deletedAt: null,
+    deletedBy: null,
+    deletedByEmail: null,
+  });
+
+// Hard delete — permanent. Use only from a trash/deleted view.
+export const permanentlyDeleteUser = (id) =>
+  deleteDoc(doc(db, COLS.users, id));
+
 export const blockUser = async (id, reason, adminUser, entityName) => {
   await updateDoc(doc(db, COLS.users, id), {
     status: "blocked",
@@ -307,34 +338,75 @@ export const getNotifications = (cb) =>
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 
-// To actually SEND FCM push, call your Cloud Function:
-// POST https://us-central1-YOUR_PROJECT.cloudfunctions.net/sendNotification
-// Body: { title, body, topic: "all" | uid }
-export const sendNotification = async ({ title, body, topic, sentBy }) => {
-  // 1. Save record to Firestore
+// Send a notification: persists a record in Firestore AND triggers an
+// actual FCM push via /api/fcm/send (Firebase Admin SDK on Vercel).
+// Returns { saved, deliveryStatus, deliveryError? }.
+//
+// Pass `topic` (default "all") to broadcast to a topic, or `token` to
+// target a single device. `token` lookup is the caller's responsibility.
+export const sendNotification = async ({
+  title,
+  body,
+  topic = "all",
+  token,
+  sentBy,
+}) => {
+  // 1. Save record to Firestore so admins see history immediately.
   await addDoc(collection(db, COLS.notifications), {
     title,
     body,
-    topic,
+    topic: token ? "single_device" : topic,
+    targetToken: token || null,
     sentBy,
     sentAt: serverTimestamp(),
     status: "sent",
   });
-  // 2. Call Cloud Function (URL configured via VITE_FCM_FUNCTION_URL)
-  const fnUrl = import.meta.env.VITE_FCM_FUNCTION_URL;
-  if (!fnUrl) {
-    console.warn("VITE_FCM_FUNCTION_URL not set – notification saved to Firestore only.");
-    return;
-  }
+
+  // 2. Trigger actual FCM delivery via the admin-only Vercel function.
+  //    Falls back to legacy VITE_FCM_FUNCTION_URL if the new endpoint
+  //    isn't reachable (e.g. local dev without functions running).
+  let deliveryStatus = "queued";
+  let deliveryError;
   try {
-    await fetch(fnUrl, {
+    const idToken = await auth.currentUser?.getIdToken();
+    if (!idToken) throw new Error("not_signed_in");
+    const res = await fetch("/api/fcm/send", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, body, topic }),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({ title, body, topic, token }),
     });
+    if (res.ok) {
+      deliveryStatus = "delivered";
+    } else {
+      const j = await res.json().catch(() => ({}));
+      deliveryStatus = "failed";
+      deliveryError = j.error || `HTTP ${res.status}`;
+    }
   } catch (e) {
-    console.warn("FCM call failed – notification saved to Firestore only.", e);
+    // Last-ditch fallback: legacy cloud function URL if configured.
+    const fnUrl = import.meta.env.VITE_FCM_FUNCTION_URL;
+    if (fnUrl) {
+      try {
+        await fetch(fnUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, body, topic }),
+        });
+        deliveryStatus = "delivered_legacy";
+      } catch (e2) {
+        deliveryStatus = "failed";
+        deliveryError = e2.message || String(e);
+      }
+    } else {
+      deliveryStatus = "failed";
+      deliveryError = e.message || String(e);
+    }
   }
+
+  return { saved: true, deliveryStatus, deliveryError };
 };
 
 // ── Audit log (read) ──────────────────────────────────────────────
