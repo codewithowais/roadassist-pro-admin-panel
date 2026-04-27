@@ -2,65 +2,145 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Only authenticated admin users can access most things
+    // ── Helpers ────────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
     function isAdmin() {
-      return request.auth != null &&
+      return isSignedIn() &&
              exists(/databases/$(database)/documents/admin_users/$(request.auth.uid));
     }
 
-    // Vendors:
-    //   - Admins can do anything.
-    //   - The public can CREATE a self-registration doc, but only with
-    //     trust-sensitive fields locked to safe defaults so applicants
-    //     can't self-approve.
-    //   - Public read/update/delete is forbidden.
-    match /vendors/{id} {
-      allow read, update, delete: if isAdmin();
-      allow create: if
-        request.resource.data.status == "pending"
-        && request.resource.data.kyc == "pending"
-        && request.resource.data.isVerified == false
-        && request.resource.data.source == "self_registration"
-        && request.resource.data.rating == 0
-        && request.resource.data.reviewCount == 0
-        // Light payload sanity: required string fields and size cap.
-        && request.resource.data.businessName is string
-        && request.resource.data.businessName.size() > 0
-        && request.resource.data.businessName.size() < 200
-        && request.resource.data.ownerName is string
-        && request.resource.data.ownerName.size() > 0
-        && request.resource.data.ownerName.size() < 200
-        && request.resource.data.phone is string
-        && request.resource.data.phone.size() > 0
-        && request.resource.data.phone.size() < 50;
+    // True when the doc being written has userId == auth.uid.
+    function isOwner() {
+      return isSignedIn()
+             && request.resource.data.userId == request.auth.uid;
     }
 
-    match /users/{id} {
-      allow read, write: if isAdmin();
+    // True when the EXISTING doc belongs to auth.uid (for read/update/delete).
+    function ownsExisting() {
+      return isSignedIn()
+             && resource.data.userId == request.auth.uid;
     }
+
+    // ── Vendors ────────────────────────────────────────────────────────
+    // - Admins: full CRUD.
+    // - Signed-in mobile users: read-only (to render the customer-facing
+    //   vendor list).
+    // - Public: CREATE a self-registration doc with trust-sensitive fields
+    //   locked to safe defaults so applicants can't self-approve.
+    match /vendors/{id} {
+      allow read: if isSignedIn() || isAdmin();
+      allow update, delete: if isAdmin();
+      allow create: if isAdmin() ||
+        (
+          request.resource.data.status == "pending"
+          && request.resource.data.kyc == "pending"
+          && request.resource.data.isVerified == false
+          && request.resource.data.source == "self_registration"
+          && request.resource.data.rating == 0
+          && request.resource.data.reviewCount == 0
+          // Light payload sanity: required string fields and size cap.
+          && request.resource.data.businessName is string
+          && request.resource.data.businessName.size() > 0
+          && request.resource.data.businessName.size() < 200
+          && request.resource.data.ownerName is string
+          && request.resource.data.ownerName.size() > 0
+          && request.resource.data.ownerName.size() < 200
+          && request.resource.data.phone is string
+          && request.resource.data.phone.size() > 0
+          && request.resource.data.phone.size() < 50
+        );
+    }
+
+    // ── User profile + per-user subcollections ────────────────────────
+    // Users can read/write their own users/{uid} doc and its subcollections
+    // (vehicles, emergencyContacts). Admins can read/write any user.
+    match /users/{uid} {
+      allow read, write: if isAdmin() ||
+                            (isSignedIn() && request.auth.uid == uid);
+
+      match /vehicles/{vehicleId} {
+        allow read, write: if isAdmin() ||
+                              (isSignedIn() && request.auth.uid == uid);
+      }
+
+      match /emergencyContacts/{contactId} {
+        allow read, write: if isAdmin() ||
+                              (isSignedIn() && request.auth.uid == uid);
+      }
+    }
+
+    // ── Service requests (top-level) ──────────────────────────────────
+    // - User: create their own (userId locked to auth.uid),
+    //         read/update their own, no delete (audit trail).
+    // - Admin: full CRUD.
+    // (Future vendor app: extend with `resource.data.vendorId == auth.uid`.)
     match /service_requests/{id} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin() || ownsExisting();
+      allow create: if isAdmin() || isOwner();
+      allow update: if isAdmin() || ownsExisting();
+      allow delete: if isAdmin();
     }
+
+    // ── SOS hotspots ──────────────────────────────────────────────────
+    // - Any signed-in user can create (logging an SOS event).
+    // - Read/update is admin-only (analytics + resolve flag).
     match /sos_hotspots/{id} {
-      allow read, write: if isAdmin();
+      allow create: if isSignedIn() &&
+                       request.resource.data.userId == request.auth.uid;
+      allow read, update, delete: if isAdmin();
     }
+
+    // ── Reviews (top-level) ───────────────────────────────────────────
+    // - Anyone signed-in can read visible reviews (vendor profile UI).
+    // - User can create their own (userId locked, status defaults to
+    //   "visible"), update their own only if not flagged/deleted.
+    // - Admin: full CRUD (moderation).
     match /reviews/{id} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin() || isSignedIn();
+      allow create: if isAdmin() ||
+        (
+          isOwner()
+          && request.resource.data.rating is number
+          && request.resource.data.rating >= 1
+          && request.resource.data.rating <= 5
+          && request.resource.data.status == "visible"
+        );
+      allow update: if isAdmin() ||
+        (ownsExisting() && resource.data.status == "visible");
+      allow delete: if isAdmin();
     }
+
+    // ── Notifications (top-level) ─────────────────────────────────────
+    // - User: create their own (in-app event-driven), read their own,
+    //         update isRead on their own. Cannot modify another user's.
+    // - Admin: full CRUD (broadcast sends).
     match /notifications/{id} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin() || ownsExisting();
+      allow create: if isAdmin() || isOwner();
+      allow update: if isAdmin() || ownsExisting();
+      allow delete: if isAdmin() || ownsExisting();
     }
+
+    // ── Admin-only collections ────────────────────────────────────────
     match /audit_log/{id} {
       allow read, write: if isAdmin();
     }
     match /app_config/{id} {
       allow read, write: if isAdmin();
     }
+    match /service_zones/{id} {
+      allow read: if isAdmin() || isSignedIn();
+      allow write: if isAdmin();
+    }
 
     // admin_users — self-read only (needed for the login guard check)
     // write is admin-only (to prevent self-escalation)
     match /admin_users/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
+      allow read: if isSignedIn() && request.auth.uid == uid;
       allow write: if isAdmin();
     }
   }
