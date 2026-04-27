@@ -2,3 +2,7 @@ node_modules
 dist
 .env
 .env.local
+.env.*
+!.env.example
+.env copy
+*.env.bak
