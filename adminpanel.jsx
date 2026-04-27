@@ -3148,10 +3148,20 @@ export default function AdminPanel() {
           await adminLogout();
           setAdminUser(null);
         }
-      } catch {
+      } catch (err) {
         if (cancelled) return;
-        await adminLogout().catch(() => {});
-        setAdminUser(null);
+        // Only fail-closed on a definitive "you are not an admin" rule denial.
+        // Network errors (ad blockers blocking firestore.googleapis.com,
+        // offline, transient outages) must keep the user signed in — Firestore
+        // rules are the real security boundary. Failing-closed here would
+        // lock out legit admins on flaky networks.
+        if (err && err.code === "permission-denied") {
+          await adminLogout().catch(() => {});
+          setAdminUser(null);
+        } else {
+          console.warn("admin_users check failed (non-fatal):", err);
+          setAdminUser(user);
+        }
       } finally {
         if (!cancelled) setAuthLoading(false);
       }
