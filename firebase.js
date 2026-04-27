@@ -223,16 +223,18 @@ export const sendNotification = async ({ title, body, topic, sentBy }) => {
     sentAt: serverTimestamp(),
     status: "sent",
   });
-  // 2. Call Cloud Function (replace URL with your project)
+  // 2. Call Cloud Function (URL configured via VITE_FCM_FUNCTION_URL)
+  const fnUrl = import.meta.env.VITE_FCM_FUNCTION_URL;
+  if (!fnUrl) {
+    console.warn("VITE_FCM_FUNCTION_URL not set – notification saved to Firestore only.");
+    return;
+  }
   try {
-    await fetch(
-      "https://us-central1-roadassist-pro.cloudfunctions.net/sendNotification",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, body, topic }),
-      },
-    );
+    await fetch(fnUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, body, topic }),
+    });
   } catch (e) {
     console.warn("FCM call failed – notification saved to Firestore only.", e);
   }
