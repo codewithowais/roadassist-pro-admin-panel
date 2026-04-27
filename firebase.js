@@ -166,9 +166,13 @@ export const permanentlyDeleteVendor = async (id) => {
 };
 
 export const approveKYC = async (id, adminUser, entityName) => {
+  // CRITICAL: must set isVerified:true — the mobile app filters vendors by
+  // `where('isVerified','==',true)`. Without this, an approved vendor never
+  // appears in the customer-facing list. See SCHEMA.md.
   await updateDoc(doc(db, COLS.vendors, id), {
     kyc: "approved",
     status: "verified",
+    isVerified: true,
     verifiedAt: serverTimestamp(),
   });
   await logAudit(
@@ -183,6 +187,8 @@ export const approveKYC = async (id, adminUser, entityName) => {
 export const rejectKYC = async (id, reason, adminUser, entityName) => {
   await updateDoc(doc(db, COLS.vendors, id), {
     kyc: "rejected",
+    status: "rejected",
+    isVerified: false,
     kycRejectedReason: reason,
   });
   await logAudit(
@@ -407,6 +413,115 @@ export const sendNotification = async ({
   }
 
   return { saved: true, deliveryStatus, deliveryError };
+};
+
+// Per-token broadcast — fallback for devices that haven't subscribed to the
+// FCM topic yet (e.g. older APK builds). Walks the relevant Firestore
+// collection, gathers `fcmToken` values, and posts them to /api/fcm/send in
+// 500-token chunks (FCM's multicast limit).
+//
+// audience: "users" | "vendors" — picks which top-level collection to walk.
+// Returns { saved, deliveryStatus, sentTokens, successCount, failureCount,
+//          failedTokens, deliveryError? }.
+export const sendNotificationToAudience = async ({
+  title,
+  body,
+  audience = "users",
+  sentBy,
+}) => {
+  if (audience !== "users" && audience !== "vendors") {
+    throw new Error(`Unknown audience: ${audience}`);
+  }
+
+  // 1. Persist a record so admins see the broadcast in history.
+  await addDoc(collection(db, COLS.notifications), {
+    title,
+    body,
+    topic: `tokens:${audience}`,
+    targetToken: null,
+    sentBy,
+    sentAt: serverTimestamp(),
+    status: "sent",
+  });
+
+  // 2. Pull tokens from Firestore. Skip docs without an fcmToken (signed-out
+  //    or never-launched accounts).
+  const sourceCollection = audience === "vendors" ? COLS.vendors : COLS.users;
+  const snap = await getDocs(collection(db, sourceCollection));
+  const tokens = [];
+  snap.forEach((d) => {
+    const t = d.data()?.fcmToken;
+    if (typeof t === "string" && t.length > 0) tokens.push(t);
+  });
+
+  if (tokens.length === 0) {
+    return {
+      saved: true,
+      deliveryStatus: "no_tokens",
+      sentTokens: 0,
+      successCount: 0,
+      failureCount: 0,
+      failedTokens: [],
+    };
+  }
+
+  // 3. Send in 500-token chunks (FCM multicast hard limit).
+  const idToken = await auth.currentUser?.getIdToken();
+  if (!idToken) {
+    return {
+      saved: true,
+      deliveryStatus: "failed",
+      sentTokens: tokens.length,
+      successCount: 0,
+      failureCount: tokens.length,
+      failedTokens: [],
+      deliveryError: "not_signed_in",
+    };
+  }
+
+  const CHUNK = 500;
+  let successCount = 0;
+  let failureCount = 0;
+  const failedTokens = [];
+  let deliveryError;
+
+  for (let i = 0; i < tokens.length; i += CHUNK) {
+    const chunk = tokens.slice(i, i + CHUNK);
+    try {
+      const res = await fetch("/api/fcm/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ title, body, tokens: chunk }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok) {
+        successCount += j.successCount || 0;
+        failureCount += j.failureCount || 0;
+        if (Array.isArray(j.failedTokens)) {
+          failedTokens.push(...j.failedTokens);
+        }
+      } else {
+        failureCount += chunk.length;
+        deliveryError = j.error || `HTTP ${res.status}`;
+      }
+    } catch (e) {
+      failureCount += chunk.length;
+      deliveryError = e.message || String(e);
+    }
+  }
+
+  return {
+    saved: true,
+    deliveryStatus: failureCount === 0 ? "delivered" : "partial",
+    sentTokens: tokens.length,
+    successCount,
+    failureCount,
+    failedTokens,
+    deliveryError,
+  };
 };
 
 // ── Audit log (read) ──────────────────────────────────────────────

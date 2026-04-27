@@ -18,13 +18,16 @@ const DART_FILE =
 const OVERWRITE = process.argv.includes("--overwrite");
 const DRY_RUN = process.argv.includes("--dry-run");
 
+// Canonical category enum — MUST match SCHEMA.md (vendors.category) and the
+// mobile app's filter values. Re-running with the old display labels would
+// silently break the mobile filter.
 const SECTION_TO_CATEGORY = {
-  towing: "Tow Truck",
-  fuel: "Fuel Delivery",
-  tyre: "Tyre Repair",
+  towing: "Towing",
+  fuel: "Fuel",
+  tyre: "Tyre",
   mechanic: "Mechanic",
   battery: "Battery",
-  accident: "Accident Recovery",
+  accident: "Accident",
 };
 
 function initAdmin() {

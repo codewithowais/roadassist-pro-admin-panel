@@ -24,15 +24,14 @@ function makeApplicationId() {
   });
 }
 
+// `value` is the canonical enum written to Firestore — MUST match SCHEMA.md
+// and the mobile app's filter values. `label` is purely the UI string and can
+// be edited freely.
 const CATEGORIES = [
   { value: "Mechanic", label: "🔧 Mechanic", desc: "General car/bike repairs" },
+  { value: "Fuel", label: "⛽ Fuel Delivery", desc: "Emergency fuel supply" },
   {
-    value: "Fuel Delivery",
-    label: "⛽ Fuel Delivery",
-    desc: "Emergency fuel supply",
-  },
-  {
-    value: "Tyre Repair",
+    value: "Tyre",
     label: "🔄 Tyre / Puncture",
     desc: "Tyre change & repair",
   },
@@ -41,9 +40,9 @@ const CATEGORIES = [
     label: "🔋 Battery Jump-Start",
     desc: "Dead battery assistance",
   },
-  { value: "Tow Truck", label: "🚛 Tow Truck", desc: "Vehicle towing service" },
+  { value: "Towing", label: "🚛 Tow Truck", desc: "Vehicle towing service" },
   {
-    value: "Accident Recovery",
+    value: "Accident",
     label: "🏗 Accident Recovery",
     desc: "Crane & recovery",
   },

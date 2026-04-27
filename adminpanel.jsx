@@ -66,6 +66,7 @@ import {
   permanentlyDeleteReview,
   getNotifications,
   sendNotification,
+  sendNotificationToAudience,
   getAuditLog,
   getAppConfig,
   saveAppConfig,
@@ -147,13 +148,18 @@ const getCatData = (primary) => [
   { name: "Tow", value: 7, color: "#a855f7" },
   { name: "Accident", value: 3, color: "#ef4444" },
 ];
+// Color map keyed by canonical category enum (SCHEMA.md → vendors.category).
+// Legacy aliases are kept so older Firestore docs still get the right color.
 const getCatColors = (primary) => ({
   Mechanic: primary,
-  "Fuel Delivery": "#3b82f6",
   Fuel: "#3b82f6",
+  "Fuel Delivery": "#3b82f6",
+  Tyre: "#22c55e",
   "Tyre Repair": "#22c55e",
   Battery: "#f59e0b",
+  Towing: "#a855f7",
   "Tow Truck": "#a855f7",
+  Accident: "#ef4444",
   "Accident Recovery": "#ef4444",
 });
 const getBadgePalette = (primary) => ({
@@ -188,13 +194,16 @@ const BADGE_MAP = {
   segment: "green",
   self_registration: "purple",
 };
+// Canonical category enum — MUST match the mobile app's filter values.
+// See SCHEMA.md → vendors.category. Changing these strings will break the
+// mobile vendor list (it filters vendors by exact category match).
 const CATEGORIES = [
   "Mechanic",
-  "Fuel Delivery",
-  "Tyre Repair",
+  "Fuel",
+  "Tyre",
   "Battery",
-  "Tow Truck",
-  "Accident Recovery",
+  "Accident",
+  "Towing",
 ];
 const CITIES = [
   "Karachi",
@@ -850,7 +859,16 @@ function NotificationPanel({ open, onClose }) {
   const t = useTheme();
   const { notifications, adminUser } = useAdmin();
   const [tab, setTab] = useState("history");
-  const [form, setForm] = useState({ title: "", body: "", topic: "all" });
+  // mode = "topic" (FCM topic broadcast — fastest, requires devices subscribed)
+  //      | "tokens" (per-device fan-out — works on any APK that has saved a
+  //                  token to users/{uid}.fcmToken; safe fallback for older
+  //                  builds that haven't subscribed to topics yet).
+  const [form, setForm] = useState({
+    title: "",
+    body: "",
+    topic: "all",
+    mode: "topic",
+  });
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null); // { ok: bool, msg: string }
 
@@ -868,10 +886,29 @@ function NotificationPanel({ open, onClose }) {
     setSending(true);
     setResult(null);
     try {
-      const r = await sendNotification({
-        ...form,
-        sentBy: adminUser?.email || "admin",
-      });
+      // Per-token fallback: only valid for the audience-level topics; we don't
+      // support per-token for city-segment topics yet (no city field on user
+      // docs). Fall back to topic delivery in that case.
+      const useTokens =
+        form.mode === "tokens" &&
+        (form.topic === "all" ||
+          form.topic === "users" ||
+          form.topic === "vendors");
+
+      const audience = form.topic === "vendors" ? "vendors" : "users";
+
+      const r = useTokens
+        ? await sendNotificationToAudience({
+            title,
+            body,
+            audience,
+            sentBy: adminUser?.email || "admin",
+          })
+        : await sendNotification({
+            ...form,
+            sentBy: adminUser?.email || "admin",
+          });
+
       await logAudit(
         "broadcast_sent",
         "notification",
@@ -879,18 +916,37 @@ function NotificationPanel({ open, onClose }) {
         {
           entityName: form.title,
           topic: form.topic || "all",
+          mode: useTokens ? "tokens" : "topic",
           body: form.body,
           deliveryStatus: r?.deliveryStatus,
+          successCount: r?.successCount,
+          failureCount: r?.failureCount,
         },
         adminUser,
       );
-      if (r?.deliveryStatus === "delivered" || r?.deliveryStatus === "delivered_legacy") {
+      if (
+        r?.deliveryStatus === "delivered" ||
+        r?.deliveryStatus === "delivered_legacy"
+      ) {
         setResult({
           ok: true,
-          msg:
-            r.deliveryStatus === "delivered_legacy"
-              ? "Sent via legacy Cloud Function."
-              : "Saved and pushed to subscribers.",
+          msg: useTokens
+            ? `Saved and pushed to ${r.successCount} device(s)${
+                r.failureCount ? ` (${r.failureCount} failed)` : ""
+              }.`
+            : r.deliveryStatus === "delivered_legacy"
+            ? "Sent via legacy Cloud Function."
+            : "Saved and pushed to subscribers.",
+        });
+      } else if (r?.deliveryStatus === "partial") {
+        setResult({
+          ok: true,
+          msg: `Sent to ${r.successCount}/${r.sentTokens} devices. ${r.failureCount} failed.`,
+        });
+      } else if (r?.deliveryStatus === "no_tokens") {
+        setResult({
+          ok: false,
+          msg: "Saved, but no devices have registered an FCM token yet.",
         });
       } else {
         setResult({
@@ -900,8 +956,8 @@ function NotificationPanel({ open, onClose }) {
             (r?.deliveryError || "unknown error"),
         });
       }
-      setTimeout(() => setResult(null), 5000);
-      setForm({ title: "", body: "", topic: "all" });
+      setTimeout(() => setResult(null), 6000);
+      setForm({ title: "", body: "", topic: "all", mode: "topic" });
     } catch (e) {
       setResult({ ok: false, msg: e.message || "Send failed." });
     } finally {
@@ -1070,6 +1126,17 @@ function NotificationPanel({ open, onClose }) {
                   <option value="karachi">Karachi Only</option>
                   <option value="lahore">Lahore Only</option>
                   <option value="vendors">All Vendors</option>
+                </Sel>
+              </FG>
+              <FG label="Delivery method">
+                <Sel
+                  value={form.mode}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, mode: e.target.value }))
+                  }
+                >
+                  <option value="topic">Topic broadcast (fastest)</option>
+                  <option value="tokens">Per-device tokens (works on older APKs)</option>
                 </Sel>
               </FG>
               <Btn
@@ -3555,11 +3622,11 @@ function Finance() {
           <CT>Commission Rates by Category</CT>
           {[
             ["Mechanic", 10],
-            ["Fuel Delivery", 5],
-            ["Tyre Repair", 8],
+            ["Fuel", 5],
+            ["Tyre", 8],
             ["Battery", 8],
-            ["Tow Truck", 12],
-            ["Accident Recovery", 15],
+            ["Towing", 12],
+            ["Accident", 15],
           ].map(([c, p]) => (
             <div
               key={c}
@@ -3862,7 +3929,13 @@ function auditActionMeta(action) {
 function Notifications_Page() {
   const t = useTheme();
   const { notifications, adminUser } = useAdmin();
-  const [form, setForm] = useState({ title: "", body: "", topic: "all" });
+  // mode: see NotificationPanel above for full description.
+  const [form, setForm] = useState({
+    title: "",
+    body: "",
+    topic: "all",
+    mode: "topic",
+  });
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
@@ -3881,10 +3954,25 @@ function Notifications_Page() {
     setSending(true);
     setResult(null);
     try {
-      const r = await sendNotification({
-        ...form,
-        sentBy: adminUser?.email || "admin",
-      });
+      const useTokens =
+        form.mode === "tokens" &&
+        (form.topic === "all" ||
+          form.topic === "users" ||
+          form.topic === "vendors");
+
+      const audience = form.topic === "vendors" ? "vendors" : "users";
+
+      const r = useTokens
+        ? await sendNotificationToAudience({
+            title,
+            body,
+            audience,
+            sentBy: adminUser?.email || "admin",
+          })
+        : await sendNotification({
+            ...form,
+            sentBy: adminUser?.email || "admin",
+          });
       await logAudit(
         "broadcast_sent",
         "notification",
@@ -3892,8 +3980,11 @@ function Notifications_Page() {
         {
           entityName: form.title,
           topic: form.topic || "all",
+          mode: useTokens ? "tokens" : "topic",
           body: form.body,
           deliveryStatus: r?.deliveryStatus,
+          successCount: r?.successCount,
+          failureCount: r?.failureCount,
         },
         adminUser,
       );
@@ -3903,10 +3994,23 @@ function Notifications_Page() {
       ) {
         setResult({
           ok: true,
-          msg:
-            r.deliveryStatus === "delivered_legacy"
-              ? "Sent via legacy Cloud Function."
-              : "Saved and pushed to subscribers.",
+          msg: useTokens
+            ? `Saved and pushed to ${r.successCount} device(s)${
+                r.failureCount ? ` (${r.failureCount} failed)` : ""
+              }.`
+            : r.deliveryStatus === "delivered_legacy"
+            ? "Sent via legacy Cloud Function."
+            : "Saved and pushed to subscribers.",
+        });
+      } else if (r?.deliveryStatus === "partial") {
+        setResult({
+          ok: true,
+          msg: `Sent to ${r.successCount}/${r.sentTokens} devices. ${r.failureCount} failed.`,
+        });
+      } else if (r?.deliveryStatus === "no_tokens") {
+        setResult({
+          ok: false,
+          msg: "Saved, but no devices have registered an FCM token yet.",
         });
       } else {
         setResult({
@@ -3917,7 +4021,7 @@ function Notifications_Page() {
         });
       }
       setTimeout(() => setResult(null), 6000);
-      setForm({ title: "", body: "", topic: "all" });
+      setForm({ title: "", body: "", topic: "all", mode: "topic" });
     } catch (e) {
       setResult({ ok: false, msg: e.message || "Send failed." });
     } finally {
@@ -3988,6 +4092,15 @@ function Notifications_Page() {
             <option value="vendors">All Vendors</option>
             <option value="karachi">Karachi Only</option>
             <option value="lahore">Lahore Only</option>
+          </Sel>
+        </FG>
+        <FG label="Delivery method">
+          <Sel
+            value={form.mode}
+            onChange={(e) => set("mode", e.target.value)}
+          >
+            <option value="topic">Topic broadcast (fastest)</option>
+            <option value="tokens">Per-device tokens (works on older APKs)</option>
           </Sel>
         </FG>
         <Btn
