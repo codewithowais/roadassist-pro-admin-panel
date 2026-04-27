@@ -2939,17 +2939,34 @@ function Login({ onLogin }) {
     setLoading(true);
     try {
       const cred = await adminLogin(email, pass);
-      // Verify this user exists in admin_users collection
-      const snap = await getDoc(doc(db, "admin_users", cred.user.uid));
-      if (!snap.exists()) {
-        await adminLogout();
-        setErr("Access denied. You are not an admin.");
-        return;
+      // Verify this user is an admin. If Firestore is unreachable
+      // (ad blocker, offline, transient outage), don't block login —
+      // the auth listener and security rules will handle it. Only a
+      // definitive permission-denied means "you are not an admin".
+      try {
+        const snap = await getDoc(doc(db, "admin_users", cred.user.uid));
+        if (!snap.exists()) {
+          await adminLogout();
+          setErr("Access denied. You are not an admin.");
+          return;
+        }
+      } catch (verifyErr) {
+        if (verifyErr?.code === "permission-denied") {
+          await adminLogout();
+          setErr("Access denied. You are not an admin.");
+          return;
+        }
+        console.warn(
+          "Could not verify admin role (Firestore unreachable). Proceeding; rules will enforce.",
+          verifyErr,
+        );
       }
       onLogin(cred.user);
     } catch (e) {
       setErr(
-        e.code === "auth/wrong-password" || e.code === "auth/user-not-found"
+        e.code === "auth/wrong-password" ||
+          e.code === "auth/user-not-found" ||
+          e.code === "auth/invalid-credential"
           ? "Invalid email or password."
           : e.message,
       );
