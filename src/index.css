@@ -57,7 +57,8 @@ html, body, #root {
   .ra-topbar {
     padding: 10px 14px !important;
   }
-  .ra-topbar-spacer {
+  .ra-topbar-spacer,
+  .ra-topbar-extra {
     display: none !important;
   }
 }

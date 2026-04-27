@@ -1824,7 +1824,7 @@ function Dashboard() {
           )}
         </Card>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div className="ra-chart-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <Card>
           <CT>Revenue ₨ — Last 7 Days</CT>
           <ResponsiveContainer width="100%" height={140}>
@@ -2475,6 +2475,7 @@ function Vendors() {
           gap: 9,
           marginBottom: 11,
           alignItems: "center",
+          flexWrap: "wrap",
         }}
       >
         <SBar
@@ -2928,7 +2929,7 @@ function SOS_Page() {
           }
         />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div className="ra-chart-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <Card>
           <CT>
             <span>
@@ -3075,7 +3076,7 @@ function Finance() {
         <KCard label="This Month" value="₨3.7L" accent="#22c55e" />
         <KCard label="Disputes" value="3" accent="#ef4444" />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div className="ra-chart-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <Card>
           <CT>Commission Rates by Category</CT>
           {[
@@ -3585,7 +3586,7 @@ function Settings_Page() {
 
   return (
     <>
-      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         {[
           ["app", "App Config"],
           ["zones", "Zones"],
@@ -3602,6 +3603,7 @@ function Settings_Page() {
       </div>
       {tab === "app" && (
         <div
+          className="ra-form-grid"
           style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}
         >
           <Card>
@@ -4344,6 +4346,7 @@ export default function AdminPanel() {
                 position: "fixed",
                 bottom: 20,
                 right: 20,
+                left: 20,
                 background: t.orange,
                 color: "#fff",
                 borderRadius: 12,
@@ -4353,6 +4356,7 @@ export default function AdminPanel() {
                 fontWeight: 600,
                 boxShadow: "0 4px 20px #0004",
                 maxWidth: 300,
+                marginLeft: "auto",
               }}
             >
               🔔 {fcmToast.title}: {fcmToast.body}
@@ -4577,9 +4581,10 @@ export default function AdminPanel() {
                 borderBottom: `1px solid ${t.border}`,
                 display: "flex",
                 alignItems: "center",
-                padding: "0 18px",
+                padding: "8px 18px",
                 gap: 10,
                 flexShrink: 0,
+                flexWrap: "wrap",
                 transition: "background .25s",
               }}
             >
@@ -4619,6 +4624,7 @@ export default function AdminPanel() {
                 {current?.label}
               </div>
               <span
+                className="ra-topbar-extra"
                 style={{
                   background: `${t.orange}1a`,
                   border: `1px solid ${t.orange}33`,
@@ -4673,6 +4679,7 @@ export default function AdminPanel() {
 
               {/* Primary color picker */}
               <label
+                className="ra-topbar-extra"
                 title="Pick primary color"
                 style={{
                   display: "flex",
@@ -4709,6 +4716,7 @@ export default function AdminPanel() {
 
               {/* Light/Dark toggle */}
               <button
+                className="ra-topbar-extra"
                 onClick={() => setIsDark((d) => !d)}
                 style={{
                   display: "flex",
@@ -4729,6 +4737,7 @@ export default function AdminPanel() {
               </button>
 
               <button
+                className="ra-topbar-extra"
                 style={{
                   background: t.hover,
                   border: `1px solid ${t.border}`,
