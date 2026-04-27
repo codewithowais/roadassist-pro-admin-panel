@@ -7,6 +7,7 @@
 // ─────────────────────────────────────────────────────────────────
 import { useState, useRef } from "react";
 import { submitVendorApplication, uploadFile } from "./firebase";
+import { v as V, check } from "./validators";
 
 // Stable per-form-instance id used as the R2 path prefix for this
 // applicant's documents (vendor-docs/<applicationId>/cnic.jpg, etc.).
@@ -109,15 +110,36 @@ export default function VendorRegister() {
     if (step === 0 && !form.category)
       e.category = "Please select a service type";
     if (step === 1) {
-      if (!form.businessName.trim())
-        e.businessName = "Business name is required";
-      if (!form.ownerName.trim()) e.ownerName = "Owner name is required";
-      if (!form.costRange.trim()) e.costRange = "Cost range is required";
+      e.businessName = check(
+        form.businessName,
+        V.required("Business name is required"),
+        V.minLength(2, "Too short — at least 2 characters"),
+        V.maxLength(120, "Too long — keep it under 120 characters"),
+      );
+      e.ownerName = check(
+        form.ownerName,
+        V.required("Owner name is required"),
+        V.minLength(2, "Too short — at least 2 characters"),
+        V.maxLength(120, "Too long — keep it under 120 characters"),
+      );
+      e.costRange = V.costRange(form.costRange);
+      e.description = V.maxLength(1000, "Description too long")(form.description);
     }
     if (step === 2) {
-      if (!form.phone.trim()) e.phone = "Phone number is required";
+      e.phone = V.pakPhone(form.phone);
+      e.whatsapp = V.pakPhoneOptional(form.whatsapp);
+      e.email = V.email(form.email);
       if (!form.city) e.city = "City is required";
-      if (!form.address.trim()) e.address = "Address is required";
+      e.address = check(
+        form.address,
+        V.required("Address is required"),
+        V.minLength(10, "Address too short — be specific"),
+        V.maxLength(500, "Address too long"),
+      );
+      e.lat = V.lat(form.lat);
+      e.lng = V.lng(form.lng);
+      e.cnicNumber = V.cnic(form.cnicNumber);
+      e.vehicleReg = V.vehicleReg(form.vehicleReg);
     }
     if (step === 3) {
       if (!uploads.cnic) e.cnic = "CNIC image is required";
@@ -125,6 +147,8 @@ export default function VendorRegister() {
     }
     if (step === 4 && !form.agreedToTerms)
       e.agreedToTerms = "You must agree to the terms";
+    // Strip null entries — only real errors count toward the validity check.
+    for (const k of Object.keys(e)) if (!e[k]) delete e[k];
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -533,6 +557,8 @@ export default function VendorRegister() {
                   value={form.businessName}
                   onChange={(e) => set("businessName", e.target.value)}
                   placeholder="e.g. Ahmed Auto Workshop"
+                  maxLength={120}
+                  autoComplete="organization"
                   style={{
                     ...inputStyle,
                     borderColor: errors.businessName ? "#dc2626" : undefined,
@@ -548,6 +574,8 @@ export default function VendorRegister() {
                   value={form.ownerName}
                   onChange={(e) => set("ownerName", e.target.value)}
                   placeholder="Full name"
+                  maxLength={120}
+                  autoComplete="name"
                   style={{
                     ...inputStyle,
                     borderColor: errors.ownerName ? "#dc2626" : undefined,
@@ -556,11 +584,12 @@ export default function VendorRegister() {
                 {errors.ownerName && <p style={errStyle}>{errors.ownerName}</p>}
               </div>
               <div>
-                <label style={labelStyle}>Cost Range</label>
+                <label style={labelStyle}>Cost Range *</label>
                 <input
                   value={form.costRange}
                   onChange={(e) => set("costRange", e.target.value)}
                   placeholder="e.g. Rs. 500 – 2,000"
+                  maxLength={60}
                   style={{
                     ...inputStyle,
                     borderColor: errors.costRange ? "#dc2626" : undefined,
@@ -574,6 +603,7 @@ export default function VendorRegister() {
                   value={form.operatingHours}
                   onChange={(e) => set("operatingHours", e.target.value)}
                   placeholder="e.g. 8am – 10pm"
+                  maxLength={60}
                   style={inputStyle}
                 />
               </div>
@@ -584,8 +614,15 @@ export default function VendorRegister() {
                   onChange={(e) => set("email", e.target.value)}
                   placeholder="your@email.com"
                   type="email"
-                  style={inputStyle}
+                  inputMode="email"
+                  autoComplete="email"
+                  maxLength={120}
+                  style={{
+                    ...inputStyle,
+                    borderColor: errors.email ? "#dc2626" : undefined,
+                  }}
                 />
+                {errors.email && <p style={errStyle}>{errors.email}</p>}
               </div>
               <div style={{ gridColumn: "1/-1" }}>
                 <label style={labelStyle}>Brief Description</label>
@@ -594,8 +631,26 @@ export default function VendorRegister() {
                   onChange={(e) => set("description", e.target.value)}
                   placeholder="Describe your services, experience, specialties..."
                   rows={3}
-                  style={{ ...inputStyle, resize: "vertical" }}
+                  maxLength={1000}
+                  style={{
+                    ...inputStyle,
+                    resize: "vertical",
+                    borderColor: errors.description ? "#dc2626" : undefined,
+                  }}
                 />
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "#94a3b8",
+                    marginTop: 4,
+                    textAlign: "right",
+                  }}
+                >
+                  {form.description.length}/1000
+                </div>
+                {errors.description && (
+                  <p style={errStyle}>{errors.description}</p>
+                )}
               </div>
             </div>
           </>
@@ -630,6 +685,10 @@ export default function VendorRegister() {
                   value={form.phone}
                   onChange={(e) => set("phone", e.target.value)}
                   placeholder="+92 300 1234567"
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  maxLength={20}
                   style={{
                     ...inputStyle,
                     borderColor: errors.phone ? "#dc2626" : undefined,
@@ -643,8 +702,16 @@ export default function VendorRegister() {
                   value={form.whatsapp}
                   onChange={(e) => set("whatsapp", e.target.value)}
                   placeholder="+92 300 1234567"
-                  style={inputStyle}
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel-national"
+                  maxLength={20}
+                  style={{
+                    ...inputStyle,
+                    borderColor: errors.whatsapp ? "#dc2626" : undefined,
+                  }}
                 />
+                {errors.whatsapp && <p style={errStyle}>{errors.whatsapp}</p>}
               </div>
               <div>
                 <label style={labelStyle}>City *</label>
@@ -671,6 +738,8 @@ export default function VendorRegister() {
                   value={form.area}
                   onChange={(e) => set("area", e.target.value)}
                   placeholder="e.g. DHA Phase 5"
+                  maxLength={120}
+                  autoComplete="address-level3"
                   style={inputStyle}
                 />
               </div>
@@ -680,6 +749,8 @@ export default function VendorRegister() {
                   value={form.address}
                   onChange={(e) => set("address", e.target.value)}
                   placeholder="Shop #, Street, Area, City"
+                  maxLength={500}
+                  autoComplete="street-address"
                   style={{
                     ...inputStyle,
                     borderColor: errors.address ? "#dc2626" : undefined,
@@ -693,8 +764,15 @@ export default function VendorRegister() {
                   value={form.lat}
                   onChange={(e) => set("lat", e.target.value)}
                   placeholder="24.8607"
-                  style={inputStyle}
+                  inputMode="decimal"
+                  pattern="-?[0-9]+(\.[0-9]+)?"
+                  maxLength={12}
+                  style={{
+                    ...inputStyle,
+                    borderColor: errors.lat ? "#dc2626" : undefined,
+                  }}
                 />
+                {errors.lat && <p style={errStyle}>{errors.lat}</p>}
               </div>
               <div>
                 <label style={labelStyle}>GPS Longitude (optional)</label>
@@ -702,8 +780,15 @@ export default function VendorRegister() {
                   value={form.lng}
                   onChange={(e) => set("lng", e.target.value)}
                   placeholder="67.0011"
-                  style={inputStyle}
+                  inputMode="decimal"
+                  pattern="-?[0-9]+(\.[0-9]+)?"
+                  maxLength={12}
+                  style={{
+                    ...inputStyle,
+                    borderColor: errors.lng ? "#dc2626" : undefined,
+                  }}
                 />
+                {errors.lng && <p style={errStyle}>{errors.lng}</p>}
               </div>
               <div
                 style={{
@@ -845,8 +930,16 @@ export default function VendorRegister() {
                   value={form.cnicNumber}
                   onChange={(e) => set("cnicNumber", e.target.value)}
                   placeholder="35201-1234567-1"
-                  style={inputStyle}
+                  inputMode="numeric"
+                  maxLength={15}
+                  style={{
+                    ...inputStyle,
+                    borderColor: errors.cnicNumber ? "#dc2626" : undefined,
+                  }}
                 />
+                {errors.cnicNumber && (
+                  <p style={errStyle}>{errors.cnicNumber}</p>
+                )}
               </div>
               <div>
                 <label style={labelStyle}>
@@ -854,10 +947,20 @@ export default function VendorRegister() {
                 </label>
                 <input
                   value={form.vehicleReg}
-                  onChange={(e) => set("vehicleReg", e.target.value)}
+                  onChange={(e) =>
+                    set("vehicleReg", e.target.value.toUpperCase())
+                  }
                   placeholder="ABC-123"
-                  style={inputStyle}
+                  maxLength={12}
+                  style={{
+                    ...inputStyle,
+                    textTransform: "uppercase",
+                    borderColor: errors.vehicleReg ? "#dc2626" : undefined,
+                  }}
                 />
+                {errors.vehicleReg && (
+                  <p style={errStyle}>{errors.vehicleReg}</p>
+                )}
               </div>
             </div>
           </>

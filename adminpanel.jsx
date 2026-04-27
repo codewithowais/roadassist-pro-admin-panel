@@ -65,6 +65,7 @@ import {
 } from "./firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { getDoc, doc } from "firebase/firestore";
+import { v as V, check } from "./validators";
 
 // ─────────────────────────────────────────────────────────────────
 //  THEME
@@ -594,7 +595,18 @@ function FG({ label, children, error }) {
     </div>
   );
 }
-function Inp({ value, onChange, placeholder, type = "text", style }) {
+function Inp({
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  inputMode,
+  pattern,
+  maxLength,
+  autoComplete,
+  invalid,
+  style,
+}) {
   const t = useTheme();
   return (
     <input
@@ -602,9 +614,13 @@ function Inp({ value, onChange, placeholder, type = "text", style }) {
       onChange={onChange}
       placeholder={placeholder}
       type={type}
+      inputMode={inputMode}
+      pattern={pattern}
+      maxLength={maxLength}
+      autoComplete={autoComplete}
       style={{
         background: t.input,
-        border: `1px solid ${t.border}`,
+        border: `1px solid ${invalid ? "#dc2626" : t.border}`,
         borderRadius: 7,
         padding: "8px 10px",
         color: t.text1,
@@ -822,7 +838,10 @@ function NotificationPanel({ open, onClose }) {
   const [sent, setSent] = useState(false);
 
   const handleSend = async () => {
-    if (!form.title || !form.body) return;
+    const title = form.title.trim();
+    const body = form.body.trim();
+    if (title.length < 3 || title.length > 100) return;
+    if (body.length < 3 || body.length > 500) return;
     setSending(true);
     try {
       await sendNotification({ ...form, sentBy: adminUser?.email || "admin" });
@@ -960,16 +979,17 @@ function NotificationPanel({ open, onClose }) {
                   ✓ Notification sent successfully!
                 </div>
               )}
-              <FG label="Title">
+              <FG label="Title (max 100)">
                 <Inp
                   value={form.title}
                   onChange={(e) =>
                     setForm((p) => ({ ...p, title: e.target.value }))
                   }
                   placeholder="e.g. Road Closure Alert"
+                  maxLength={100}
                 />
               </FG>
-              <FG label="Body">
+              <FG label="Body (max 500)">
                 <textarea
                   value={form.body}
                   onChange={(e) =>
@@ -977,6 +997,7 @@ function NotificationPanel({ open, onClose }) {
                   }
                   placeholder="Notification message..."
                   rows={3}
+                  maxLength={500}
                   style={{
                     background: t.input,
                     border: `1px solid ${t.border}`,
@@ -1126,10 +1147,38 @@ function AddVendorModal({ onClose, existing }) {
   const originalUploadsRef = useRef(initialUploads);
   const [progress, setProgress] = useState({ cnic: 0, license: 0, photo: 0 });
   const [uploadErrs, setUploadErrs] = useState({});
+  const [fieldErrs, setFieldErrs] = useState({});
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const fileRefs = useRef({});
-  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+  const set = (k, val) => {
+    setForm((p) => ({ ...p, [k]: val }));
+    setFieldErrs((p) => ({ ...p, [k]: undefined }));
+  };
+
+  const validateForm = () => {
+    const e = {};
+    e.name = check(
+      form.name,
+      V.required("Business name is required"),
+      V.minLength(2, "Too short"),
+      V.maxLength(120, "Too long"),
+    );
+    if (!form.category) e.category = "Select a category";
+    e.phone = V.pakPhone(form.phone);
+    e.whatsapp = V.pakPhoneOptional(form.whatsapp);
+    if (!form.city) e.city = "Select a city";
+    e.address = V.maxLength(500, "Address too long")(form.address || "");
+    e.lat = V.lat(form.lat);
+    e.lng = V.lng(form.lng);
+    e.operatingHours = V.maxLength(60, "Too long")(form.operatingHours || "");
+    if (form.costRange && form.costRange.trim()) {
+      e.costRange = V.costRange(form.costRange);
+    }
+    for (const k of Object.keys(e)) if (!e[k]) delete e[k];
+    setFieldErrs(e);
+    return Object.keys(e).length === 0;
+  };
 
   const isR2Path = (p) => p && !/^https?:/i.test(p);
 
@@ -1157,10 +1206,11 @@ function AddVendorModal({ onClose, existing }) {
   };
 
   const handleSubmit = async () => {
-    if (!form.name || !form.category || !form.phone || !form.city) {
-      setErr("Name, category, phone and city are required.");
+    if (!validateForm()) {
+      setErr("Fix the highlighted fields and try again.");
       return;
     }
+    setErr("");
     setLoading(true);
     try {
       // If admin picks "verified" in the Status field, treat the vendor as
@@ -1303,14 +1353,17 @@ function AddVendorModal({ onClose, existing }) {
           <div
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
           >
-            <FG label="Business Name *">
+            <FG label="Business Name *" error={fieldErrs.name}>
               <Inp
                 value={form.name}
                 onChange={(e) => set("name", e.target.value)}
                 placeholder="AutoFix Garage"
+                maxLength={120}
+                autoComplete="organization"
+                invalid={!!fieldErrs.name}
               />
             </FG>
-            <FG label="Service Category *">
+            <FG label="Service Category *" error={fieldErrs.category}>
               <Sel
                 value={form.category}
                 onChange={(e) => set("category", e.target.value)}
@@ -1323,21 +1376,31 @@ function AddVendorModal({ onClose, existing }) {
                 ))}
               </Sel>
             </FG>
-            <FG label="Phone *">
+            <FG label="Phone *" error={fieldErrs.phone}>
               <Inp
                 value={form.phone}
                 onChange={(e) => set("phone", e.target.value)}
                 placeholder="+92 300 1234567"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                maxLength={20}
+                invalid={!!fieldErrs.phone}
               />
             </FG>
-            <FG label="WhatsApp">
+            <FG label="WhatsApp" error={fieldErrs.whatsapp}>
               <Inp
                 value={form.whatsapp}
                 onChange={(e) => set("whatsapp", e.target.value)}
                 placeholder="+92 300 1234567"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel-national"
+                maxLength={20}
+                invalid={!!fieldErrs.whatsapp}
               />
             </FG>
-            <FG label="City *">
+            <FG label="City *" error={fieldErrs.city}>
               <Sel
                 value={form.city}
                 onChange={(e) => set("city", e.target.value)}
@@ -1350,17 +1413,21 @@ function AddVendorModal({ onClose, existing }) {
                 ))}
               </Sel>
             </FG>
-            <FG label="Operating Hours">
+            <FG label="Operating Hours" error={fieldErrs.operatingHours}>
               <Inp
                 value={form.operatingHours}
                 onChange={(e) => set("operatingHours", e.target.value)}
+                maxLength={60}
+                invalid={!!fieldErrs.operatingHours}
               />
             </FG>
-            <FG label="Cost Range">
+            <FG label="Cost Range" error={fieldErrs.costRange}>
               <Inp
                 value={form.costRange}
                 onChange={(e) => set("costRange", e.target.value)}
                 placeholder="Rs. 500 – 2,000"
+                maxLength={60}
+                invalid={!!fieldErrs.costRange}
               />
             </FG>
             <FG label="Status">
@@ -1373,26 +1440,37 @@ function AddVendorModal({ onClose, existing }) {
               </Sel>
             </FG>
             <div style={{ gridColumn: "1/-1" }}>
-              <FG label="Address">
+              <FG label="Address" error={fieldErrs.address}>
                 <Inp
                   value={form.address}
                   onChange={(e) => set("address", e.target.value)}
                   placeholder="Full address"
+                  maxLength={500}
+                  autoComplete="street-address"
+                  invalid={!!fieldErrs.address}
                 />
               </FG>
             </div>
-            <FG label="GPS Lat">
+            <FG label="GPS Lat" error={fieldErrs.lat}>
               <Inp
                 value={form.lat}
                 onChange={(e) => set("lat", e.target.value)}
                 placeholder="24.8607"
+                inputMode="decimal"
+                pattern="-?[0-9]+(\.[0-9]+)?"
+                maxLength={12}
+                invalid={!!fieldErrs.lat}
               />
             </FG>
-            <FG label="GPS Lng">
+            <FG label="GPS Lng" error={fieldErrs.lng}>
               <Inp
                 value={form.lng}
                 onChange={(e) => set("lng", e.target.value)}
                 placeholder="67.0011"
+                inputMode="decimal"
+                pattern="-?[0-9]+(\.[0-9]+)?"
+                maxLength={12}
+                invalid={!!fieldErrs.lng}
               />
             </FG>
             <div
@@ -2307,12 +2385,13 @@ function Vendors() {
             >
               Reject KYC — {vendorName(rejectModal) || "vendor"}
             </div>
-            <FG label="Rejection Reason">
+            <FG label="Rejection Reason (10–500 chars)">
               <textarea
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
                 rows={3}
                 placeholder="e.g. Documents unclear, CNIC expired…"
+                maxLength={500}
                 style={{
                   background: t.input,
                   border: `1px solid ${t.border}`,
@@ -2325,6 +2404,16 @@ function Vendors() {
                   resize: "vertical",
                 }}
               />
+              <div
+                style={{
+                  fontSize: 10,
+                  color: t.muted,
+                  marginTop: 3,
+                  textAlign: "right",
+                }}
+              >
+                {rejectReason.length}/500
+              </div>
             </FG>
             <div
               style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
@@ -2333,7 +2422,7 @@ function Vendors() {
               <Btn
                 variant="danger"
                 onClick={handleReject}
-                disabled={!rejectReason.trim()}
+                disabled={rejectReason.trim().length < 10}
               >
                 Reject KYC
               </Btn>
@@ -3430,6 +3519,7 @@ function Settings_Page() {
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [errs, setErrs] = useState({});
 
   useEffect(() => {
     const unsub = getAppConfig((data) => {
@@ -3438,7 +3528,19 @@ function Settings_Page() {
     return unsub;
   }, []);
 
+  const validateConfig = () => {
+    const e = {};
+    e.searchRadius = V.positiveInt(1, 100)(config.searchRadius);
+    e.resultLimit = V.positiveInt(1, 200)(config.resultLimit);
+    e.sosCooldown = V.positiveInt(0, 60)(config.sosCooldown);
+    e.helpline = V.helpline(config.helpline);
+    for (const k of Object.keys(e)) if (!e[k]) delete e[k];
+    setErrs(e);
+    return Object.keys(e).length === 0;
+  };
+
   const handleSave = async () => {
+    if (!validateConfig()) return;
     setSaving(true);
     try {
       await saveAppConfig(config);
@@ -3505,43 +3607,77 @@ function Settings_Page() {
                 ✓ Configuration saved to Firestore!
               </div>
             )}
-            <FG label="Vendor Search Radius (km)">
+            <FG
+              label="Vendor Search Radius (km, 1–100)"
+              error={errs.searchRadius}
+            >
               <input
                 value={config.searchRadius}
-                onChange={(e) =>
-                  setConfig((p) => ({ ...p, searchRadius: e.target.value }))
-                }
+                onChange={(e) => {
+                  const v = e.target.value.replace(/\D/g, "");
+                  setConfig((p) => ({ ...p, searchRadius: v }));
+                  setErrs((p) => ({ ...p, searchRadius: undefined }));
+                }}
                 type="number"
-                style={inp}
+                inputMode="numeric"
+                min={1}
+                max={100}
+                style={{
+                  ...inp,
+                  borderColor: errs.searchRadius ? "#dc2626" : t.border,
+                }}
               />
             </FG>
-            <FG label="Vendor Result Limit">
+            <FG label="Vendor Result Limit (1–200)" error={errs.resultLimit}>
               <input
                 value={config.resultLimit}
-                onChange={(e) =>
-                  setConfig((p) => ({ ...p, resultLimit: e.target.value }))
-                }
+                onChange={(e) => {
+                  const v = e.target.value.replace(/\D/g, "");
+                  setConfig((p) => ({ ...p, resultLimit: v }));
+                  setErrs((p) => ({ ...p, resultLimit: undefined }));
+                }}
                 type="number"
-                style={inp}
+                inputMode="numeric"
+                min={1}
+                max={200}
+                style={{
+                  ...inp,
+                  borderColor: errs.resultLimit ? "#dc2626" : t.border,
+                }}
               />
             </FG>
-            <FG label="SOS Cooldown (seconds)">
+            <FG label="SOS Cooldown (seconds, 0–60)" error={errs.sosCooldown}>
               <input
                 value={config.sosCooldown}
-                onChange={(e) =>
-                  setConfig((p) => ({ ...p, sosCooldown: e.target.value }))
-                }
+                onChange={(e) => {
+                  const v = e.target.value.replace(/\D/g, "");
+                  setConfig((p) => ({ ...p, sosCooldown: v }));
+                  setErrs((p) => ({ ...p, sosCooldown: undefined }));
+                }}
                 type="number"
-                style={inp}
+                inputMode="numeric"
+                min={0}
+                max={60}
+                style={{
+                  ...inp,
+                  borderColor: errs.sosCooldown ? "#dc2626" : t.border,
+                }}
               />
             </FG>
-            <FG label="Emergency Helpline">
+            <FG label="Emergency Helpline" error={errs.helpline}>
               <input
                 value={config.helpline}
-                onChange={(e) =>
-                  setConfig((p) => ({ ...p, helpline: e.target.value }))
-                }
-                style={inp}
+                onChange={(e) => {
+                  setConfig((p) => ({ ...p, helpline: e.target.value }));
+                  setErrs((p) => ({ ...p, helpline: undefined }));
+                }}
+                type="tel"
+                inputMode="tel"
+                maxLength={20}
+                style={{
+                  ...inp,
+                  borderColor: errs.helpline ? "#dc2626" : t.border,
+                }}
               />
             </FG>
             <div
