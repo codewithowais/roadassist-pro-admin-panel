@@ -49,14 +49,47 @@ export async function verifyAdmin(req) {
     err.status = 401;
     throw err;
   }
-  const doc = await admin
-    .firestore()
-    .doc(`admin_users/${decoded.uid}`)
-    .get();
-  if (!doc.exists) {
-    const err = new Error("not an admin");
-    err.status = 403;
+
+  // Fast path: trust the custom claim stamped by set-admin-claims.mjs.
+  // This is FREE — the claim rides inside the JWT we just verified, no
+  // Firestore round-trip needed. `decoded.disabled === true` lets us lock
+  // out offboarded admins without deleting their admin_users doc.
+  if (decoded.admin === true && decoded.disabled !== true) {
+    return decoded;
+  }
+
+  // Slow path / migration fallback: when an admin hasn't refreshed their
+  // ID token since the migration ran, the claim is missing. Fall back to
+  // the legacy admin_users lookup so they keep working until next sign-in.
+  // Once every active admin has refreshed (or after their tokens expire,
+  // ~1h), this branch effectively becomes dead code.
+  try {
+    const doc = await admin
+      .firestore()
+      .doc(`admin_users/${decoded.uid}`)
+      .get();
+    if (!doc.exists) {
+      const err = new Error("not an admin");
+      err.status = 403;
+      throw err;
+    }
+    if (doc.data()?.disabled === true) {
+      const err = new Error("admin disabled");
+      err.status = 403;
+      throw err;
+    }
+    // Backfill the role onto the decoded object so downstream callers
+    // (invite.js role gate) don't need to re-read the same doc.
+    decoded.role = doc.data()?.role || decoded.role || null;
+    return decoded;
+  } catch (e) {
+    if (e.status) throw e; // already-shaped 403
+    // Firestore failures (quota, network) shouldn't masquerade as auth
+    // errors. Re-throw with a clear status so the handler can return 503.
+    const err = new Error(
+      `admin_check_failed: ${e.code || e.message || "unknown"}`,
+    );
+    err.status = 503;
     throw err;
   }
-  return decoded;
 }

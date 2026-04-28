@@ -46,7 +46,7 @@ export default async function handler(req, res) {
   try {
     caller = await verifyAdmin(req);
   } catch (e) {
-    return send(res, e.status || 401, { error: e.message });
+    return send(res, e.status || 500, { error: e.message });
   }
 
   let body;
@@ -66,12 +66,17 @@ export default async function handler(req, res) {
 
   try {
     initAdmin();
-    // Caller's role check.
-    const callerSnap = await admin
-      .firestore()
-      .doc(`admin_users/${caller.uid}`)
-      .get();
-    const callerRole = callerSnap.data()?.role;
+    // Caller's role check. Prefer the custom claim (free) and fall back
+    // to a Firestore read only if the claim isn't present yet — same
+    // graceful-migration pattern as verifyAdmin.
+    let callerRole = caller.role || null;
+    if (!callerRole) {
+      const callerSnap = await admin
+        .firestore()
+        .doc(`admin_users/${caller.uid}`)
+        .get();
+      callerRole = callerSnap.data()?.role || null;
+    }
     if (callerRole !== "superadmin" && callerRole !== "manager")
       return send(res, 403, { error: "insufficient_permissions" });
 
@@ -87,6 +92,22 @@ export default async function handler(req, res) {
       if (e.code === "auth/email-already-exists")
         return send(res, 409, { error: "email_already_exists" });
       throw e;
+    }
+
+    // Stamp the custom claim BEFORE writing the admin_users doc so the
+    // new admin's very first sign-in produces a token with the claim
+    // already in place. No further Firestore read needed in verifyAdmin.
+    try {
+      await admin.auth().setCustomUserClaims(userRecord.uid, {
+        admin: true,
+        role,
+        disabled: false,
+      });
+    } catch (e) {
+      // Non-fatal: the admin_users doc still gets written, and verifyAdmin
+      // falls back to the Firestore read. Log so it's visible.
+      // eslint-disable-next-line no-console
+      console.warn("[invite] setCustomUserClaims failed:", e.message);
     }
 
     // Create admin_users doc.

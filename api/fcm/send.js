@@ -61,7 +61,12 @@ export default async function handler(req, res) {
   try {
     admin_user = await verifyAdmin(req);
   } catch (e) {
-    return send(res, e.status || 401, { error: e.message });
+    // verifyAdmin sets e.status on every throw path (401 for invalid
+    // token, 403 for non-admin, 503 for Firestore quota / network
+    // failures). Defaulting to 500 — never 401 — so a future code path
+    // that throws without a status doesn't masquerade as auth failure
+    // and confuse the client.
+    return send(res, e.status || 500, { error: e.message });
   }
 
   let body;

@@ -136,9 +136,17 @@ export async function logAudit(
 }
 
 // ── Vendor CRUD ───────────────────────────────────────────────────
+// Capped at 100 docs to stay well under the Firestore free-tier 50K
+// reads/day quota — onSnapshot pays 1 read per matched doc on every
+// (re)connect, so an unbounded query was the single biggest read drain
+// in the panel. If you have >100 vendors, paginate via the admin UI.
 export const getVendors = (cb) =>
   onSnapshot(
-    query(collection(db, COLS.vendors), orderBy("createdAt", "desc")),
+    query(
+      collection(db, COLS.vendors),
+      orderBy("createdAt", "desc"),
+      limit(100),
+    ),
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 
@@ -278,9 +286,17 @@ export const rejectKYC = async (id, reason, adminUser, entityName) => {
 };
 
 // ── User CRUD ─────────────────────────────────────────────────────
+// Capped at 100 docs (see getVendors for rationale). The full user list
+// is rarely needed in one shot — admins typically search by name/phone,
+// which Firestore can serve with a small targeted query rather than
+// downloading every user.
 export const getUsers = (cb) =>
   onSnapshot(
-    query(collection(db, COLS.users), orderBy("createdAt", "desc")),
+    query(
+      collection(db, COLS.users),
+      orderBy("createdAt", "desc"),
+      limit(100),
+    ),
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 
@@ -455,9 +471,16 @@ export const resolveSOS = async (id, adminUser, entityName) => {
 };
 
 // ── Reviews ───────────────────────────────────────────────────────
+// Capped at 100 newest reviews (see getVendors for rationale). Older
+// reviews are still in Firestore for analytics/queries — just not
+// streamed live to the moderation feed.
 export const getReviews = (cb) =>
   onSnapshot(
-    query(collection(db, COLS.reviews), orderBy("createdAt", "desc")),
+    query(
+      collection(db, COLS.reviews),
+      orderBy("createdAt", "desc"),
+      limit(100),
+    ),
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 

@@ -45,7 +45,7 @@ export default async function handler(req, res) {
   try {
     await verifyAdmin(req);
   } catch (e) {
-    return send(res, e.status || 401, { error: e.message });
+    return send(res, e.status || 500, { error: e.message });
   }
 
   let body;

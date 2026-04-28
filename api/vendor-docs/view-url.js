@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return send(res, 405, { error: "method_not_allowed" });
 
   try { await verifyAdmin(req); }
-  catch (e) { return send(res, e.status || 401, { error: e.message }); }
+  catch (e) { return send(res, e.status || 500, { error: e.message }); }
 
   let body;
   try { body = await readJsonBody(req); }

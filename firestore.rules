@@ -8,9 +8,20 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Admin check. Fast path uses the custom claim stamped by
+    // set-admin-claims.mjs — that's free, no Firestore read. Fallback
+    // to the legacy admin_users exists() lookup so admins whose ID
+    // tokens haven't refreshed yet keep working during the migration
+    // window. Once every admin has signed out and back in, you can
+    // simplify this to just `request.auth.token.admin == true` and
+    // delete the exists() call.
     function isAdmin() {
       return isSignedIn() &&
-             exists(/databases/$(database)/documents/admin_users/$(request.auth.uid));
+             (
+               (request.auth.token.admin == true &&
+                request.auth.token.disabled != true) ||
+               exists(/databases/$(database)/documents/admin_users/$(request.auth.uid))
+             );
     }
 
     // True when the doc being written has userId == auth.uid.
