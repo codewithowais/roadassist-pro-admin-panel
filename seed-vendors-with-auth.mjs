@@ -26,7 +26,10 @@ const DART_FILE =
   "/Users/codewithowais/Downloads/izma-alee/roadassist_pro/lib/features/vendors/data/verified_vendors_data.dart";
 
 const OVERWRITE = process.argv.includes("--overwrite");
-const PER_CATEGORY = 5;
+// Default: seed every vendor in the source (PER_CATEGORY very high).
+// Pass `--limit=5` to seed only 5 per category for a quick smoke test.
+const limitArg = process.argv.find((a) => a.startsWith("--limit="));
+const PER_CATEGORY = limitArg ? Number(limitArg.split("=")[1]) : 9999;
 const DEFAULT_PASSWORD = "Vendor@123";
 
 function emailFor(category, city, slug) {
