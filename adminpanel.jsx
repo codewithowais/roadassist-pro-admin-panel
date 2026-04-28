@@ -2754,10 +2754,12 @@ function Users() {
   const { users, adminUser } = useAdmin();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [roleFilter, setRoleFilter] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
   const [editUser, setEditUser] = useState(null);
 
   const userLabel = (u) => u.name || u.email || u.phone || "user";
+  const userRole = (u) => (u.role === "vendor" || u.role === "admin" ? u.role : "customer");
   const deletedCount = users.filter((u) => u.deletedAt).length;
 
   // Active = not soft-deleted. Deleted view shown only when filter === "deleted".
@@ -2766,6 +2768,7 @@ function Users() {
     if (filter === "deleted" ? !isDeleted : isDeleted) return false;
     if (filter !== "all" && filter !== "deleted" && u.status !== filter)
       return false;
+    if (roleFilter !== "all" && userRole(u) !== roleFilter) return false;
     if (search) {
       const s = search.toLowerCase();
       const hit =
@@ -2823,7 +2826,7 @@ function Users() {
     );
   };
 
-  const pager = usePagination(filtered, 25, `${search}|${filter}`);
+  const pager = usePagination(filtered, 25, `${search}|${filter}|${roleFilter}`);
 
   return (
     <>
@@ -2871,12 +2874,27 @@ function Users() {
           />
         ))}
       </div>
+      <div style={{ marginBottom: 11 }}>
+        {[
+          ["all", `All Roles (${users.filter((u) => !u.deletedAt).length})`],
+          ["customer", `Customers (${users.filter((u) => !u.deletedAt && userRole(u) === "customer").length})`],
+          ["vendor", `Vendors (${users.filter((u) => !u.deletedAt && userRole(u) === "vendor").length})`],
+          ["admin", `Admins (${users.filter((u) => !u.deletedAt && userRole(u) === "admin").length})`],
+        ].map(([k, l]) => (
+          <Chip
+            key={k}
+            label={l}
+            active={roleFilter === k}
+            onClick={() => setRoleFilter(k)}
+          />
+        ))}
+      </div>
       <Card>
         {filtered.length === 0 ? (
           <Empty />
         ) : (
           <Tbl
-            headers={["User", "Email", "Phone", "City", "Jobs", "Status", "Actions"]}
+            headers={["User", "Email", "Phone", "Role", "City", "Jobs", "Status", "Actions"]}
             rows={pager.slice.map((u) => (
               <tr key={u.id}>
                 <TD>
@@ -2895,6 +2913,32 @@ function Users() {
                 </TD>
                 <TD style={{ fontFamily: "monospace", fontSize: 11 }}>
                   {u.phone || "—"}
+                </TD>
+                <TD>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      padding: "2px 8px",
+                      borderRadius: 999,
+                      fontSize: 10,
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      background:
+                        userRole(u) === "vendor"
+                          ? "#dbeafe"
+                          : userRole(u) === "admin"
+                          ? "#fee2e2"
+                          : "#f3f4f6",
+                      color:
+                        userRole(u) === "vendor"
+                          ? "#1e40af"
+                          : userRole(u) === "admin"
+                          ? "#991b1b"
+                          : t.muted,
+                    }}
+                  >
+                    {userRole(u)}
+                  </span>
                 </TD>
                 <TD>{u.city || "—"}</TD>
                 <TD style={{ color: t.orange, fontWeight: 600 }}>
