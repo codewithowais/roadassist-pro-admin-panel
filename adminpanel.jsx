@@ -2876,7 +2876,7 @@ function Users() {
           <Empty />
         ) : (
           <Tbl
-            headers={["User", "Phone", "City", "Jobs", "Status", "Actions"]}
+            headers={["User", "Email", "Phone", "City", "Jobs", "Status", "Actions"]}
             rows={pager.slice.map((u) => (
               <tr key={u.id}>
                 <TD>
@@ -2889,6 +2889,9 @@ function Users() {
                     />
                     {userLabel(u)}
                   </div>
+                </TD>
+                <TD style={{ fontFamily: "monospace", fontSize: 11, wordBreak: "break-all" }}>
+                  {u.email || "—"}
                 </TD>
                 <TD style={{ fontFamily: "monospace", fontSize: 11 }}>
                   {u.phone || "—"}
