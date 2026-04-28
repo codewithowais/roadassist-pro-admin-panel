@@ -79,6 +79,27 @@ export const adminLogout = () => fbSignOut(auth);
 //   - details: free-form object. ALWAYS include entityName when known so the
 //              audit log is readable without a join — vendor businessName,
 //              user email, etc.
+// Recursively strip `undefined` from arbitrary plain objects/arrays.
+// Firestore rejects undefined fields with "Unsupported field value:
+// undefined" — turning them into null (or dropping them) keeps the
+// audit log resilient to callers who optionally pass count fields
+// from a sometimes-missing response (e.g. sendNotification() returns
+// no successCount, while sendNotificationToAudience() does).
+function stripUndefined(value) {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (Array.isArray(value)) return value.map(stripUndefined);
+  if (typeof value === "object" && value.constructor === Object) {
+    const out = {};
+    for (const k of Object.keys(value)) {
+      const v = stripUndefined(value[k]);
+      if (v !== undefined) out[k] = v;
+    }
+    return out;
+  }
+  return value;
+}
+
 export async function logAudit(
   action,
   entityType,
@@ -86,12 +107,13 @@ export async function logAudit(
   details = {},
   adminUser,
 ) {
+  const cleanDetails = stripUndefined(details) || {};
   await addDoc(collection(db, COLS.auditLog), {
     action,
     entityType,
     entityId,
-    entityName: details?.entityName || null,
-    details,
+    entityName: cleanDetails?.entityName || null,
+    details: cleanDetails,
     adminUid: adminUser?.uid || "unknown",
     adminName: adminUser?.email || "Admin",
     timestamp: serverTimestamp(),
