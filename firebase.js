@@ -329,6 +329,72 @@ export const unbanUser = async (id, adminUser, entityName) => {
   );
 };
 
+// ── Emergency contacts (per-user subcollection) ──────────────────
+// Stored at users/{uid}/emergencyContacts/{contactId} by the mobile app.
+// Admins can read & write any user's contacts (e.g. to clean up bad
+// data or pre-seed a contact for a relative).
+export const getEmergencyContacts = (uid, cb) => {
+  if (!uid) {
+    cb([]);
+    return () => {};
+  }
+  return onSnapshot(
+    query(
+      collection(db, "users", uid, "emergencyContacts"),
+      orderBy("createdAt", "asc"),
+    ),
+    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    () => cb([]),
+  );
+};
+
+// Admin lookup: find a user by phone (used to flag a contact as
+// app-linked when admin is adding/editing on someone else's behalf).
+export const lookupUserByPhone = async (phone) => {
+  if (!phone) return null;
+  const snap = await getDocs(
+    query(collection(db, COLS.users), where("phone", "==", phone), limit(1)),
+  );
+  if (snap.empty) return null;
+  const d = snap.docs[0];
+  return { uid: d.id, ...d.data() };
+};
+
+export const addEmergencyContact = async (uid, contact) => {
+  if (!uid) throw new Error("uid required");
+  const payload = {
+    name: contact.name || "",
+    phone: contact.phone || "",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  if (contact.linkedUid) {
+    payload.linkedUid = contact.linkedUid;
+    payload.linkedAt = serverTimestamp();
+  }
+  return addDoc(collection(db, "users", uid, "emergencyContacts"), payload);
+};
+
+export const updateEmergencyContact = async (uid, contactId, contact) => {
+  if (!uid || !contactId) throw new Error("uid and contactId required");
+  const payload = {
+    name: contact.name || "",
+    phone: contact.phone || "",
+    updatedAt: serverTimestamp(),
+  };
+  if (contact.linkedUid !== undefined) {
+    payload.linkedUid = contact.linkedUid || null;
+    if (contact.linkedUid) payload.linkedAt = serverTimestamp();
+  }
+  return updateDoc(
+    doc(db, "users", uid, "emergencyContacts", contactId),
+    payload,
+  );
+};
+
+export const deleteEmergencyContact = (uid, contactId) =>
+  deleteDoc(doc(db, "users", uid, "emergencyContacts", contactId));
+
 // ── Service requests ──────────────────────────────────────────────
 export const getRequests = (cb) =>
   onSnapshot(

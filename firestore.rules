@@ -187,6 +187,17 @@ service cloud.firestore {
                          && request.resource.data.userId is string
                          && request.resource.data.userId.size() > 0
                          && request.resource.data.type == "serviceUpdate"
+                       )
+                       // SOS alert from sender → emergency contact (linked app user).
+                       // The sender uid must equal auth.uid; recipient is the linked
+                       // contact's uid. Locked to type "sosAlert" so it can't be
+                       // repurposed for spam.
+                       || (
+                         isSignedIn()
+                         && request.resource.data.userId is string
+                         && request.resource.data.userId.size() > 0
+                         && request.resource.data.type == "sosAlert"
+                         && request.resource.data.senderUid == request.auth.uid
                        );
       allow update: if isAdmin() || ownsExisting();
       allow delete: if isAdmin() || ownsExisting();
