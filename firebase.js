@@ -108,14 +108,29 @@ export async function logAudit(
   adminUser,
 ) {
   const cleanDetails = stripUndefined(details) || {};
+  // Best-effort browser device info — null on SSR or older browsers.
+  const ua =
+    typeof navigator !== "undefined" && navigator.userAgent
+      ? navigator.userAgent
+      : null;
   await addDoc(collection(db, COLS.auditLog), {
     action,
+    // Unified actor model — admin actions get actorType:"admin"; mobile
+    // (customer/vendor) writes set their own. Read filters in
+    // AuditLog_Page rely on this field having a value on every doc.
+    actorType: "admin",
+    actorUid: adminUser?.uid || "unknown",
+    actorName: adminUser?.email || "Admin",
+    actorEmail: adminUser?.email || null,
+    // Legacy fields kept for backwards compatibility with existing
+    // AuditLog_Page code paths that read adminUid/adminName directly.
+    adminUid: adminUser?.uid || "unknown",
+    adminName: adminUser?.email || "Admin",
     entityType,
     entityId,
     entityName: cleanDetails?.entityName || null,
     details: cleanDetails,
-    adminUid: adminUser?.uid || "unknown",
-    adminName: adminUser?.email || "Admin",
+    device: { platform: "web", userAgent: ua },
     timestamp: serverTimestamp(),
   });
 }
@@ -415,15 +430,29 @@ export const updateRequestStatus = (id, status) =>
 // ── SOS ───────────────────────────────────────────────────────────
 export const getSOS = (cb) =>
   onSnapshot(
-    query(collection(db, COLS.sos), orderBy("createdAt", "desc"), limit(20)),
+    // Pull more history so the SOS-page History view can show resolved
+    // alerts going back further than the active-only feed needed.
+    query(collection(db, COLS.sos), orderBy("createdAt", "desc"), limit(200)),
     (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
   );
 
-export const resolveSOS = (id) =>
-  updateDoc(doc(db, COLS.sos, id), {
+// Resolves an SOS alert. Stamps the resolving admin onto the doc and
+// emits an `audit_log` row so the unified Activity History (and the
+// SOS-page history view) can show who closed each alert.
+export const resolveSOS = async (id, adminUser, entityName) => {
+  await updateDoc(doc(db, COLS.sos, id), {
     resolved: true,
     resolvedAt: serverTimestamp(),
+    resolvedBy: adminUser?.email || adminUser?.uid || "admin",
   });
+  await logAudit(
+    "sos_resolved",
+    "sos",
+    id,
+    { entityName: entityName || null },
+    adminUser,
+  );
+};
 
 // ── Reviews ───────────────────────────────────────────────────────
 export const getReviews = (cb) =>
@@ -502,7 +531,11 @@ export const sendNotification = async ({
   let deliveryStatus = "queued";
   let deliveryError;
   try {
-    const idToken = await auth.currentUser?.getIdToken();
+    // Force-refresh the ID token. Without this, a long-lived admin
+    // session can ship a cached token that's already expired by the
+    // time it reaches Firebase Admin's verifyIdToken — surfaces as a
+    // 401 "invalid_token: id-token-expired".
+    const idToken = await auth.currentUser?.getIdToken(true);
     if (!idToken) throw new Error("not_signed_in");
     const res = await fetch("/api/fcm/send", {
       method: "POST",
@@ -518,6 +551,8 @@ export const sendNotification = async ({
       const j = await res.json().catch(() => ({}));
       deliveryStatus = "failed";
       deliveryError = j.error || `HTTP ${res.status}`;
+      // eslint-disable-next-line no-console
+      console.error("[fcm/send] failed:", res.status, j);
     }
   } catch (e) {
     // Last-ditch fallback: legacy cloud function URL if configured.
@@ -602,7 +637,8 @@ export const sendNotificationToAudience = async ({
   }
 
   // 3. Send in 500-token chunks (FCM multicast hard limit).
-  const idToken = await auth.currentUser?.getIdToken();
+  // Force-refresh — see sendNotification() above for the rationale.
+  const idToken = await auth.currentUser?.getIdToken(true);
   if (!idToken) {
     return {
       saved: true,
@@ -746,7 +782,8 @@ export const sendNotificationToUsers = async ({
   }
 
   // 3. Push via /api/fcm/send in 500-token chunks.
-  const idToken = await auth.currentUser?.getIdToken();
+  // Force-refresh — see sendNotification() above for the rationale.
+  const idToken = await auth.currentUser?.getIdToken(true);
   if (!idToken) {
     return {
       saved: true,
@@ -783,6 +820,8 @@ export const sendNotificationToUsers = async ({
       } else {
         failureCount += chunk.length;
         deliveryError = j.error || `HTTP ${res.status}`;
+        // eslint-disable-next-line no-console
+        console.error("[fcm/send users] failed:", res.status, j);
       }
     } catch (e) {
       failureCount += chunk.length;

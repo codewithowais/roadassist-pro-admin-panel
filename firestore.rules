@@ -203,9 +203,24 @@ service cloud.firestore {
       allow delete: if isAdmin() || ownsExisting();
     }
 
-    // ── Admin-only collections ────────────────────────────────────────
+    // ── Audit log ─────────────────────────────────────────────────────
+    // - Admins: full read + write (admin-panel actions).
+    // - Signed-in mobile users (customers + vendors): create-only, locked
+    //   to their own actor identity (actorUid == auth.uid). Required
+    //   actorType ∈ {customer, vendor} so admins can't be impersonated.
+    //   No update or delete from clients — entries are immutable.
     match /audit_log/{id} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow create: if isAdmin() ||
+        (
+          isSignedIn()
+          && request.resource.data.actorUid == request.auth.uid
+          && request.resource.data.actorType in ['customer', 'vendor']
+          && request.resource.data.action is string
+          && request.resource.data.action.size() > 0
+          && request.resource.data.action.size() < 80
+        );
+      allow update, delete: if isAdmin();
     }
     match /app_config/{id} {
       allow read, write: if isAdmin();

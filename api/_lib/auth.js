@@ -20,9 +20,19 @@ function init() {
 }
 
 export async function verifyAdmin(req) {
-  init();
+  // Distinguish server config failures (500) from caller auth failures
+  // (401/403). Without this split, a missing FIREBASE_SERVICE_ACCOUNT env
+  // var on Vercel surfaces as a confusing 401 "missing bearer token" or
+  // similar, when the real cause is the server isn't booted.
+  try {
+    init();
+  } catch (e) {
+    const err = new Error(`server_misconfigured: ${e.message}`);
+    err.status = 500;
+    throw err;
+  }
   const header = req.headers?.authorization || req.headers?.Authorization || "";
-  const m = header.match(/^Bearer (.+)$/);
+  const m = header.match(/^Bearer\s+(.+)$/i);
   if (!m) {
     const err = new Error("missing bearer token");
     err.status = 401;
@@ -30,9 +40,12 @@ export async function verifyAdmin(req) {
   }
   let decoded;
   try {
-    decoded = await admin.auth().verifyIdToken(m[1]);
-  } catch {
-    const err = new Error("invalid token");
+    decoded = await admin.auth().verifyIdToken(m[1].trim());
+  } catch (e) {
+    // Surface the underlying reason (expired, revoked, wrong audience…)
+    // so the admin panel can show a useful prompt — typically "your
+    // session expired, please sign in again".
+    const err = new Error(`invalid_token: ${e.code || e.message || "unknown"}`);
     err.status = 401;
     throw err;
   }

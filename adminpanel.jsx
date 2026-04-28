@@ -4560,9 +4560,12 @@ function Requests() {
 
 function SOS_Page() {
   const t = useTheme();
-  const { sos, users } = useAdmin();
+  const { sos, users, adminUser } = useAdmin();
   const active = sos.filter((s) => !s.resolved);
   const resolved = sos.filter((s) => s.resolved);
+  // History panel state.
+  const [historyFilter, setHistoryFilter] = useState("all");
+  const [historySearch, setHistorySearch] = useState("");
   // Helper: enrich an SOS doc with the sender's user info if missing.
   // Older clients only wrote `userId`; newer ones also write `userName`/`userEmail`.
   const enrich = (s) => {
@@ -4575,6 +4578,106 @@ function SOS_Page() {
       userPhone: s.userPhone || u?.phone || "",
     };
   };
+
+  // Renders the per-recipient delivery list. Reused by both the Active
+  // and History panels so admins see the same level of detail when
+  // reviewing a closed alert.
+  const RecipientList = ({ items }) => (
+    <div
+      style={{
+        marginTop: 6,
+        padding: "6px 8px",
+        background: t.input,
+        border: `1px solid ${t.border}`,
+        borderRadius: 6,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 9,
+          fontWeight: 700,
+          color: t.muted,
+          textTransform: "uppercase",
+          letterSpacing: 0.4,
+          marginBottom: 4,
+        }}
+      >
+        Recipients ({items.length})
+      </div>
+      {items.map((r, idx) => (
+        <div
+          key={idx}
+          style={{
+            fontSize: 10,
+            color: t.text2,
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
+            padding: "2px 0",
+          }}
+        >
+          <span style={{ fontWeight: 600, color: t.text1 }}>
+            {r.name || "—"}
+          </span>
+          <span style={{ fontFamily: "monospace" }}>{r.phone || ""}</span>
+          <span
+            style={{
+              fontSize: 9,
+              padding: "0 5px",
+              borderRadius: 3,
+              background: r.isAppUser ? "#22c55e22" : "#f59e0b22",
+              color: r.isAppUser ? "#16a34a" : "#b45309",
+              fontWeight: 700,
+            }}
+          >
+            {r.isAppUser ? "APP" : "WHATSAPP"}
+          </span>
+          {r.isAppUser && (
+            <span
+              style={{
+                fontSize: 9,
+                color: r.pushSucceeded ? "#16a34a" : "#dc2626",
+              }}
+            >
+              {r.pushSucceeded ? "✓ pushed" : "✕ failed"}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  // Filtered + sorted history list (newest first). Active rows surface
+  // when the user picks "Active" or "All" so this single list works as a
+  // complete timeline. The top "live" panel still shows active for
+  // quick triage.
+  const sortedAll = [...sos].sort((a, b) => {
+    const ta = a.createdAt?.toDate?.()?.getTime?.() || 0;
+    const tb = b.createdAt?.toDate?.()?.getTime?.() || 0;
+    return tb - ta;
+  });
+  const historyFiltered = sortedAll
+    .filter((s) => {
+      if (historyFilter === "active") return !s.resolved;
+      if (historyFilter === "resolved") return s.resolved;
+      return true;
+    })
+    .map(enrich)
+    .filter((s) => {
+      if (!historySearch) return true;
+      const q = historySearch.toLowerCase();
+      return (
+        (s.userName || "").toLowerCase().includes(q) ||
+        (s.userEmail || "").toLowerCase().includes(q) ||
+        (s.userPhone || "").toLowerCase().includes(q) ||
+        (s.id || "").toLowerCase().includes(q)
+      );
+    });
+  const historyPager = usePagination(
+    historyFiltered,
+    10,
+    `${historyFilter}|${historySearch}`,
+  );
   return (
     <>
       <div
@@ -4674,7 +4777,10 @@ function SOS_Page() {
                       · {s.contactsNotified || 0} contacts
                       {s.appUsersPushed > 0 && ` · ${s.appUsersPushed} pushed`}
                     </div>
-                    <div style={{ fontSize: 10, color: t.muted, marginTop: 1 }}>
+                    {Array.isArray(s.recipients) && s.recipients.length > 0 && (
+                      <RecipientList items={s.recipients} />
+                    )}
+                    <div style={{ fontSize: 10, color: t.muted, marginTop: 4 }}>
                       {s.createdAt?.toDate?.()?.toLocaleString() || "—"}
                     </div>
                   </div>
@@ -4684,7 +4790,7 @@ function SOS_Page() {
                     <Btn
                       variant="success"
                       style={{ padding: "2px 8px", fontSize: 10 }}
-                      onClick={() => resolveSOS(s.id)}
+                      onClick={() => resolveSOS(s.id, adminUser, s.userName)}
                     >
                       Resolve
                     </Btn>
@@ -4740,6 +4846,155 @@ function SOS_Page() {
           ))}
         </Card>
       </div>
+      {/* Full SOS history — every alert ever raised, with filter + search +
+          recipient drilldown. Replaces the previous "active-only" view that
+          made it impossible to audit a closed emergency after resolve. */}
+      <Card style={{ marginTop: 14 }}>
+        <CT>SOS History</CT>
+        <div style={{ marginBottom: 9 }}>
+          <SBar
+            placeholder="Search by name, email, phone, or alert id…"
+            value={historySearch}
+            onChange={(e) => setHistorySearch(e.target.value)}
+          />
+        </div>
+        <div style={{ marginBottom: 11 }}>
+          {[
+            ["all", "All"],
+            ["active", "Active"],
+            ["resolved", "Resolved"],
+          ].map(([k, label]) => (
+            <Chip
+              key={k}
+              label={label}
+              active={historyFilter === k}
+              onClick={() => setHistoryFilter(k)}
+            />
+          ))}
+        </div>
+        {historyFiltered.length === 0 ? (
+          <Empty icon="📜" text="No SOS records match" />
+        ) : (
+          historyPager.slice.map((s, i) => {
+            const mapsUrl =
+              s.lat && s.lng
+                ? `https://maps.google.com/?q=${s.lat},${s.lng}`
+                : null;
+            const ts = s.createdAt?.toDate?.();
+            const resolvedTs = s.resolvedAt?.toDate?.();
+            const isActive = !s.resolved;
+            return (
+              <div
+                key={s.id || i}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  alignItems: "flex-start",
+                  padding: "10px 0",
+                  borderBottom: `1px solid ${t.border}`,
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: isActive ? "#ef4444" : "#22c55e",
+                    flexShrink: 0,
+                    marginTop: 6,
+                  }}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      alignItems: "baseline",
+                      gap: 6,
+                    }}
+                  >
+                    <span
+                      style={{ fontSize: 12, fontWeight: 700, color: t.text1 }}
+                    >
+                      {s.userName}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 9,
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        background: isActive ? "#ef444422" : "#22c55e22",
+                        color: isActive ? "#dc2626" : "#16a34a",
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.4,
+                      }}
+                    >
+                      {isActive ? "Active" : "Resolved"}
+                    </span>
+                  </div>
+                  {s.userEmail && (
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: t.muted,
+                        fontFamily: "monospace",
+                        marginTop: 1,
+                      }}
+                    >
+                      {s.userEmail}
+                    </div>
+                  )}
+                  <div
+                    style={{ fontSize: 10, color: "#b45309", marginTop: 3 }}
+                  >
+                    📍{" "}
+                    {mapsUrl ? (
+                      <a
+                        href={mapsUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          color: "#b45309",
+                          textDecoration: "underline",
+                        }}
+                      >
+                        {s.lat?.toFixed?.(4)}, {s.lng?.toFixed?.(4)}
+                      </a>
+                    ) : (
+                      "—"
+                    )}{" "}
+                    · {s.contactsNotified || 0} contacts
+                    {s.appUsersPushed > 0 &&
+                      ` · ${s.appUsersPushed} pushed`}
+                  </div>
+                  {Array.isArray(s.recipients) && s.recipients.length > 0 && (
+                    <RecipientList items={s.recipients} />
+                  )}
+                  <div
+                    style={{ fontSize: 10, color: t.muted, marginTop: 4 }}
+                  >
+                    Triggered: {ts ? ts.toLocaleString() : "—"}
+                    {resolvedTs ? ` · Resolved: ${resolvedTs.toLocaleString()}` : ""}
+                    {s.resolvedBy ? ` · by ${s.resolvedBy}` : ""}
+                    {s.id ? ` · id: ${s.id}` : ""}
+                  </div>
+                </div>
+                {isActive && (
+                  <Btn
+                    variant="success"
+                    style={{ padding: "2px 8px", fontSize: 10 }}
+                    onClick={() => resolveSOS(s.id, adminUser, s.userName)}
+                  >
+                    Resolve
+                  </Btn>
+                )}
+              </div>
+            );
+          })
+        )}
+        <Pager {...historyPager} />
+      </Card>
     </>
   );
 }
@@ -5070,6 +5325,39 @@ const AUDIT_ACTION_META = {
   request_cancelled: { label: "Request cancelled", icon: "⏹", color: "#f59e0b" },
   broadcast_sent: { label: "Notification sent", icon: "🔔", color: "#3b82f6" },
   config_changed: { label: "Config updated", icon: "⚙", color: "#a855f7" },
+  // Mobile (customer) actions
+  emergency_contact_added: { label: "Emergency contact added", icon: "+", color: "#22c55e" },
+  emergency_contact_updated: { label: "Emergency contact updated", icon: "✎", color: "#3b82f6" },
+  emergency_contact_deleted: { label: "Emergency contact removed", icon: "🗑", color: "#f59e0b" },
+  sos_triggered: { label: "🆘 SOS triggered", icon: "🆘", color: "#ef4444" },
+  service_request_created: { label: "Service request created", icon: "+", color: "#22c55e" },
+  service_request_cancelled: { label: "Service request cancelled", icon: "⏹", color: "#f59e0b" },
+  service_request_completed: { label: "Service request completed", icon: "✓", color: "#22c55e" },
+  review_submitted: { label: "Review submitted", icon: "★", color: "#22c55e" },
+  user_signed_up: { label: "Account created", icon: "+", color: "#22c55e" },
+  user_signed_in: { label: "Signed in", icon: "→", color: "#3b82f6" },
+  user_signed_out: { label: "Signed out", icon: "←", color: "#6b7280" },
+  user_profile_updated: { label: "Profile updated", icon: "✎", color: "#3b82f6" },
+  vehicle_added: { label: "Vehicle added", icon: "+", color: "#22c55e" },
+  vehicle_updated: { label: "Vehicle updated", icon: "✎", color: "#3b82f6" },
+  vehicle_deleted: { label: "Vehicle removed", icon: "🗑", color: "#f59e0b" },
+  vehicle_primary_set: { label: "Primary vehicle changed", icon: "★", color: "#3b82f6" },
+  // Mobile (vendor) actions
+  vendor_went_online: { label: "Vendor went online", icon: "●", color: "#22c55e" },
+  vendor_went_offline: { label: "Vendor went offline", icon: "○", color: "#6b7280" },
+  vendor_profile_updated: { label: "Vendor profile updated", icon: "✎", color: "#3b82f6" },
+  vendor_job_accepted: { label: "Vendor accepted job", icon: "✓", color: "#22c55e" },
+  vendor_job_declined: { label: "Vendor declined job", icon: "✕", color: "#ef4444" },
+  vendor_job_completed: { label: "Vendor completed job", icon: "✓", color: "#22c55e" },
+  vendor_job_onTheWay: { label: "Vendor on the way", icon: "→", color: "#3b82f6" },
+  vendor_job_arrived: { label: "Vendor arrived", icon: "⚑", color: "#3b82f6" },
+};
+
+const ACTOR_TYPE_META = {
+  admin: { label: "Admin", color: "#a855f7" },
+  customer: { label: "Customer", color: "#3b82f6" },
+  vendor: { label: "Vendor", color: "#f59e0b" },
+  system: { label: "System", color: "#6b7280" },
 };
 
 function auditActionMeta(action) {
@@ -5382,7 +5670,9 @@ function AuditLog_Page() {
   const t = useTheme();
   const { auditLogData } = useAdmin();
   const [filter, setFilter] = useState("all");
+  const [actorFilter, setActorFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState({});
   const actionTypes = [
     "all",
     "vendor",
@@ -5391,33 +5681,69 @@ function AuditLog_Page() {
     "review",
     "notification",
     "config",
+    "contact",
+    "sos",
+    "vehicle",
   ];
+  const actorTypes = ["all", "admin", "customer", "vendor", "system"];
+
+  // Older entries don't carry actorType; fall back to "admin" so the
+  // filter remains meaningful for legacy rows.
+  const resolvedActorType = (a) => a.actorType || "admin";
+  const resolvedActorName = (a) =>
+    a.actorName || a.adminName || a.actorEmail || "Unknown";
+
   const matchesSearch = (a) => {
     if (!search) return true;
     const s = search.toLowerCase();
     return (
       (a.entityName || "").toLowerCase().includes(s) ||
       (a.action || "").toLowerCase().includes(s) ||
-      (a.adminName || "").toLowerCase().includes(s) ||
+      (resolvedActorName(a) || "").toLowerCase().includes(s) ||
       (a.entityId || "").toLowerCase().includes(s)
     );
   };
   const filtered = auditLogData.filter(
     (a) =>
-      (filter === "all" || a.entityType === filter) && matchesSearch(a),
+      (filter === "all" || a.entityType === filter) &&
+      (actorFilter === "all" || resolvedActorType(a) === actorFilter) &&
+      matchesSearch(a),
   );
-  const pager = usePagination(filtered, 25, `${filter}|${search}`);
+  const pager = usePagination(
+    filtered,
+    25,
+    `${filter}|${actorFilter}|${search}`,
+  );
+
+  const toggleExpand = (id) =>
+    setExpanded((p) => ({ ...p, [id]: !p[id] }));
 
   return (
     <>
       <div style={{ marginBottom: 9 }}>
         <SBar
-          placeholder="Search by entity name, action, admin…"
+          placeholder="Search by entity name, action, actor…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
+      <div style={{ marginBottom: 8 }}>
+        <span style={{ fontSize: 10, color: t.muted, marginRight: 8 }}>
+          Actor:
+        </span>
+        {actorTypes.map((f) => (
+          <Chip
+            key={f}
+            label={f === "all" ? "All" : ACTOR_TYPE_META[f]?.label || f}
+            active={actorFilter === f}
+            onClick={() => setActorFilter(f)}
+          />
+        ))}
+      </div>
       <div style={{ marginBottom: 11 }}>
+        <span style={{ fontSize: 10, color: t.muted, marginRight: 8 }}>
+          Entity:
+        </span>
         {actionTypes.map((f) => (
           <Chip
             key={f}
@@ -5428,26 +5754,38 @@ function AuditLog_Page() {
         ))}
       </div>
       <Card>
-        <CT action="Export CSV">Admin Action History</CT>
+        <CT action="Export CSV">Activity History</CT>
         {filtered.length === 0 ? (
           <Empty icon="📜" text="No audit records" />
         ) : (
           pager.slice.map((a, i) => {
             const meta = auditActionMeta(a.action);
+            const actorType = resolvedActorType(a);
+            const actorMeta = ACTOR_TYPE_META[actorType] || ACTOR_TYPE_META.admin;
+            const actorName = resolvedActorName(a);
             const name =
               a.entityName || a.details?.entityName || a.entityId || "—";
             const reason = a.details?.reason;
             const ts = a.timestamp?.toDate?.();
+            const rowId = a.id || `${i}`;
+            const isOpen = !!expanded[rowId];
+            const detailKeys = a.details
+              ? Object.keys(a.details).filter(
+                  (k) => k !== "entityName" && k !== "reason",
+                )
+              : [];
             return (
               <div
-                key={a.id || i}
+                key={rowId}
                 style={{
                   display: "flex",
                   gap: 9,
                   alignItems: "flex-start",
                   padding: "9px 0",
                   borderBottom: `1px solid ${t.border}`,
+                  cursor: detailKeys.length ? "pointer" : "default",
                 }}
+                onClick={() => detailKeys.length && toggleExpand(rowId)}
               >
                 <div
                   style={{
@@ -5477,6 +5815,20 @@ function AuditLog_Page() {
                       alignItems: "baseline",
                     }}
                   >
+                    <span
+                      style={{
+                        background: `${actorMeta.color}22`,
+                        color: actorMeta.color,
+                        fontSize: 9,
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.3,
+                      }}
+                    >
+                      {actorMeta.label}
+                    </span>
                     <span>{meta.label}</span>
                     <span style={{ color: t.orange, fontWeight: 500 }}>
                       {name}
@@ -5495,12 +5847,38 @@ function AuditLog_Page() {
                     </div>
                   )}
                   <div style={{ fontSize: 10, color: t.muted, marginTop: 2 }}>
-                    By {a.adminName || "Admin"}
+                    By {actorName}
+                    {a.actorEmail && a.actorEmail !== actorName
+                      ? ` (${a.actorEmail})`
+                      : ""}
                     {ts ? ` · ${ts.toLocaleString()}` : ""}
                     {a.entityId && a.entityId !== name
                       ? ` · id: ${a.entityId}`
                       : ""}
+                    {a.device?.platform ? ` · ${a.device.platform}` : ""}
+                    {detailKeys.length
+                      ? ` · ${isOpen ? "▾" : "▸"} ${detailKeys.length} detail${detailKeys.length === 1 ? "" : "s"}`
+                      : ""}
                   </div>
+                  {isOpen && detailKeys.length > 0 && (
+                    <pre
+                      style={{
+                        marginTop: 6,
+                        padding: 8,
+                        background: t.input,
+                        border: `1px solid ${t.border}`,
+                        borderRadius: 6,
+                        fontSize: 10,
+                        color: t.text2,
+                        maxHeight: 220,
+                        overflow: "auto",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {JSON.stringify(a.details, null, 2)}
+                    </pre>
+                  )}
                 </div>
               </div>
             );
