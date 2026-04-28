@@ -6,3 +6,4 @@ dist
 !.env.example
 .env copy
 *.env.bak
+seed-vendors-credentials.csv
