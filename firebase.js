@@ -594,6 +594,147 @@ export const sendNotificationToAudience = async ({
   };
 };
 
+// Send a notification to a hand-picked set of users by uid. For each
+// uid we (a) write a notifications/{id} doc targeted at that user so
+// it appears in their in-app inbox, then (b) collect their fcmToken
+// and post a multicast push via /api/fcm/send.
+//
+// uids: string[]  — the user ids selected by the admin
+// Returns: { saved, recipients, sentTokens, successCount, failureCount,
+//            failedTokens, deliveryStatus, deliveryError? }
+export const sendNotificationToUsers = async ({
+  title,
+  body,
+  uids,
+  sentBy,
+}) => {
+  if (!Array.isArray(uids) || uids.length === 0) {
+    throw new Error("At least one recipient uid is required.");
+  }
+
+  // 1. Write a per-user inbox notification + a single audit-style
+  //    aggregate row so the broadcast history page shows it.
+  const writes = uids.map((uid) =>
+    addDoc(collection(db, COLS.notifications), {
+      userId: uid,
+      type: "targeted",
+      title,
+      body,
+      isRead: false,
+      createdAt: serverTimestamp(),
+    }),
+  );
+  await Promise.allSettled(writes);
+  await addDoc(collection(db, COLS.notifications), {
+    title,
+    body,
+    topic: `selected_users:${uids.length}`,
+    targetToken: null,
+    sentBy,
+    sentAt: serverTimestamp(),
+    status: "sent",
+  });
+
+  // 2. Collect FCM tokens for the selected uids. We dedupe via Set so a
+  //    single physical device that's signed in as multiple of these
+  //    users (rare but possible) still only gets one push.
+  const tokenSet = new Set();
+  // Firestore allows up to 30 ids per `in` query (Firebase v10+). Chunk.
+  const ID_CHUNK = 30;
+  for (let i = 0; i < uids.length; i += ID_CHUNK) {
+    const chunk = uids.slice(i, i + ID_CHUNK);
+    try {
+      const snap = await getDocs(
+        query(collection(db, COLS.users), where("uid", "in", chunk)),
+      );
+      snap.forEach((d) => {
+        const t = d.data()?.fcmToken;
+        if (typeof t === "string" && t.length > 0) tokenSet.add(t);
+      });
+    } catch (e) {
+      // Fallback: some user docs may not have a `uid` field stored
+      // (older accounts). Hit each by doc-id one-by-one.
+      // eslint-disable-next-line no-console
+      console.warn("[sendToUsers] in-query failed, fallback:", e);
+      for (const uid of chunk) {
+        try {
+          const d = await getDoc(doc(db, COLS.users, uid));
+          const t = d.data()?.fcmToken;
+          if (typeof t === "string" && t.length > 0) tokenSet.add(t);
+        } catch {}
+      }
+    }
+  }
+  const tokens = Array.from(tokenSet);
+
+  if (tokens.length === 0) {
+    return {
+      saved: true,
+      recipients: uids.length,
+      deliveryStatus: "no_tokens",
+      sentTokens: 0,
+      successCount: 0,
+      failureCount: 0,
+      failedTokens: [],
+    };
+  }
+
+  // 3. Push via /api/fcm/send in 500-token chunks.
+  const idToken = await auth.currentUser?.getIdToken();
+  if (!idToken) {
+    return {
+      saved: true,
+      recipients: uids.length,
+      deliveryStatus: "failed",
+      sentTokens: tokens.length,
+      successCount: 0,
+      failureCount: tokens.length,
+      failedTokens: [],
+      deliveryError: "not_signed_in",
+    };
+  }
+  const CHUNK = 500;
+  let successCount = 0;
+  let failureCount = 0;
+  const failedTokens = [];
+  let deliveryError;
+  for (let i = 0; i < tokens.length; i += CHUNK) {
+    const chunk = tokens.slice(i, i + CHUNK);
+    try {
+      const res = await fetch("/api/fcm/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ title, body, tokens: chunk }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok) {
+        successCount += j.successCount || 0;
+        failureCount += j.failureCount || 0;
+        if (Array.isArray(j.failedTokens)) failedTokens.push(...j.failedTokens);
+      } else {
+        failureCount += chunk.length;
+        deliveryError = j.error || `HTTP ${res.status}`;
+      }
+    } catch (e) {
+      failureCount += chunk.length;
+      deliveryError = e.message || String(e);
+    }
+  }
+  return {
+    saved: true,
+    recipients: uids.length,
+    deliveryStatus: failureCount === 0 ? "delivered" : "partial",
+    sentTokens: tokens.length,
+    successCount,
+    failureCount,
+    failedTokens,
+    deliveryError,
+  };
+};
+
 // ── Audit log (read) ──────────────────────────────────────────────
 export const getAuditLog = (cb) =>
   onSnapshot(

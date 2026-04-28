@@ -10,7 +10,7 @@
 //    import AdminPanel from './AdminPanel'
 //    export default function App() { return <AdminPanel /> }
 // ─────────────────────────────────────────────────────────────────
-import { useState, useEffect, useRef, createContext, useContext } from "react";
+import { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
 import {
   LineChart,
   Line,
@@ -67,6 +67,7 @@ import {
   getNotifications,
   sendNotification,
   sendNotificationToAudience,
+  sendNotificationToUsers,
   getAuditLog,
   getAppConfig,
   saveAppConfig,
@@ -864,21 +865,283 @@ function Pager({
 }
 
 // ─────────────────────────────────────────────────────────────────
+//  RECIPIENT PICKER — multi-select user/vendor list with search.
+//  Used by both the slide-in NotificationPanel and the full-page
+//  Notifications page so the "Specific people" send mode looks the
+//  same everywhere. Filters by role, shows last-seen + token status,
+//  and surfaces a count of how many devices the send will reach.
+// ─────────────────────────────────────────────────────────────────
+function RecipientPicker({ users, vendors, value, onChange, t }) {
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("all"); // all|customer|vendor
+
+  // Build a unified list. Vendor records that have an authUid are
+  // matched to their users/{uid} doc so we don't double-count people
+  // who registered through the vendor flow.
+  const userList = useMemo(() => {
+    const vendorByAuthUid = new Map();
+    (vendors || []).forEach((v) => {
+      if (v.authUid) vendorByAuthUid.set(v.authUid, v);
+    });
+    return (users || [])
+      .filter((u) => !u.deletedAt)
+      .map((u) => {
+        const matchedVendor = vendorByAuthUid.get(u.uid || u.id);
+        const role = matchedVendor || u.role === "vendor" ? "vendor" : "customer";
+        return {
+          uid: u.uid || u.id,
+          name:
+            matchedVendor?.businessName ||
+            u.name ||
+            u.email ||
+            "(no name)",
+          email: u.email || "",
+          phone: u.phone || "",
+          city: matchedVendor?.city || u.city || "",
+          role,
+          hasToken: typeof u.fcmToken === "string" && u.fcmToken.length > 0,
+        };
+      });
+  }, [users, vendors]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return userList.filter((u) => {
+      if (roleFilter !== "all" && u.role !== roleFilter) return false;
+      if (!q) return true;
+      return (
+        u.name.toLowerCase().includes(q) ||
+        u.email.toLowerCase().includes(q) ||
+        u.phone.toLowerCase().includes(q) ||
+        u.city.toLowerCase().includes(q)
+      );
+    });
+  }, [userList, search, roleFilter]);
+
+  const selectedSet = useMemo(() => new Set(value || []), [value]);
+  const toggle = (uid) => {
+    const next = new Set(selectedSet);
+    if (next.has(uid)) next.delete(uid);
+    else next.add(uid);
+    onChange(Array.from(next));
+  };
+  const selectAll = () =>
+    onChange(Array.from(new Set([...selectedSet, ...filtered.map((u) => u.uid)])));
+  const clearAll = () =>
+    onChange((value || []).filter((uid) => !filtered.some((u) => u.uid === uid)));
+
+  const tokenCount = (value || []).filter((uid) =>
+    userList.find((u) => u.uid === uid && u.hasToken),
+  ).length;
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${t.border}`,
+        borderRadius: 10,
+        background: t.input,
+        padding: 10,
+      }}
+    >
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name, email, phone, city…"
+          style={{
+            flex: 1,
+            background: t.card,
+            border: `1px solid ${t.border}`,
+            borderRadius: 7,
+            padding: "7px 10px",
+            color: t.text1,
+            fontSize: 12,
+            outline: "none",
+          }}
+        />
+        <Sel
+          value={roleFilter}
+          onChange={(e) => setRoleFilter(e.target.value)}
+          style={{ width: 110 }}
+        >
+          <option value="all">All</option>
+          <option value="customer">Customers</option>
+          <option value="vendor">Vendors</option>
+        </Sel>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 6,
+          fontSize: 11,
+        }}
+      >
+        <span style={{ color: t.text1, fontWeight: 600 }}>
+          {(value || []).length} selected · {tokenCount} reachable
+        </span>
+        <span style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={selectAll}
+            type="button"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: t.orange,
+              cursor: "pointer",
+              fontSize: 11,
+              fontWeight: 600,
+              padding: 0,
+            }}
+          >
+            Select shown
+          </button>
+          <button
+            onClick={clearAll}
+            type="button"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: t.muted,
+              cursor: "pointer",
+              fontSize: 11,
+              fontWeight: 600,
+              padding: 0,
+            }}
+          >
+            Clear shown
+          </button>
+        </span>
+      </div>
+
+      <div
+        style={{
+          maxHeight: 240,
+          overflowY: "auto",
+          background: t.card,
+          border: `1px solid ${t.border}`,
+          borderRadius: 8,
+        }}
+      >
+        {filtered.length === 0 && (
+          <div style={{ padding: 14, fontSize: 11, color: t.muted }}>
+            No matches.
+          </div>
+        )}
+        {filtered.slice(0, 200).map((u) => {
+          const sel = selectedSet.has(u.uid);
+          return (
+            <div
+              key={u.uid}
+              onClick={() => toggle(u.uid)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "8px 10px",
+                borderBottom: `1px dashed ${t.border}`,
+                cursor: "pointer",
+                background: sel ? t.activeNavBg : "transparent",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={sel}
+                onChange={() => toggle(u.uid)}
+                onClick={(e) => e.stopPropagation()}
+                style={{ accentColor: t.orange }}
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: t.text1,
+                    fontWeight: 600,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {u.name}
+                  <span
+                    style={{
+                      marginLeft: 8,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing: 0.5,
+                      padding: "1px 6px",
+                      borderRadius: 999,
+                      background:
+                        u.role === "vendor" ? "#dbeafe" : "#f3f4f6",
+                      color:
+                        u.role === "vendor" ? "#1e40af" : t.muted,
+                    }}
+                  >
+                    {u.role.toUpperCase()}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: t.muted,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {[u.email, u.phone, u.city].filter(Boolean).join(" · ") || "—"}
+                </div>
+              </div>
+              <span
+                title={u.hasToken ? "Will receive push" : "No FCM token registered"}
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: u.hasToken ? "#22c55e" : "#cbd5e1",
+                  flexShrink: 0,
+                }}
+              />
+            </div>
+          );
+        })}
+        {filtered.length > 200 && (
+          <div
+            style={{
+              padding: "8px 10px",
+              fontSize: 10,
+              color: t.muted,
+              textAlign: "center",
+            }}
+          >
+            Showing first 200 of {filtered.length}. Refine the search to see more.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
 //  NOTIFICATION PANEL (slide-in from right)
 // ─────────────────────────────────────────────────────────────────
 function NotificationPanel({ open, onClose }) {
   const t = useTheme();
-  const { notifications, adminUser } = useAdmin();
+  const { notifications, adminUser, users, vendors } = useAdmin();
   const [tab, setTab] = useState("history");
-  // mode = "topic" (FCM topic broadcast — fastest, requires devices subscribed)
-  //      | "tokens" (per-device fan-out — works on any APK that has saved a
-  //                  token to users/{uid}.fcmToken; safe fallback for older
-  //                  builds that haven't subscribed to topics yet).
+  // mode = "topic"  → FCM topic broadcast (fastest, requires devices
+  //                   subscribed to the topic)
+  //      | "tokens" → per-device fan-out across all users in audience
+  //      | "users"  → admin picks a specific list of uids; only those
+  //                   users get the notification (in-app + push)
   const [form, setForm] = useState({
     title: "",
     body: "",
     topic: "all",
     mode: "topic",
+    selectedUids: [],
   });
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null); // { ok: bool, msg: string }
@@ -894,6 +1157,10 @@ function NotificationPanel({ open, onClose }) {
       setResult({ ok: false, msg: "Body must be 3–500 characters." });
       return;
     }
+    if (form.mode === "users" && form.selectedUids.length === 0) {
+      setResult({ ok: false, msg: "Pick at least one recipient." });
+      return;
+    }
     setSending(true);
     setResult(null);
     try {
@@ -905,10 +1172,18 @@ function NotificationPanel({ open, onClose }) {
         (form.topic === "all" ||
           form.topic === "users" ||
           form.topic === "vendors");
+      const useUserPicker = form.mode === "users";
 
       const audience = form.topic === "vendors" ? "vendors" : "users";
 
-      const r = useTokens
+      const r = useUserPicker
+        ? await sendNotificationToUsers({
+            title,
+            body,
+            uids: form.selectedUids,
+            sentBy: adminUser?.email || "admin",
+          })
+        : useTokens
         ? await sendNotificationToAudience({
             title,
             body,
@@ -926,12 +1201,15 @@ function NotificationPanel({ open, onClose }) {
         form.topic || "all",
         {
           entityName: form.title,
-          topic: form.topic || "all",
-          mode: useTokens ? "tokens" : "topic",
+          topic: useUserPicker
+            ? `selected:${form.selectedUids.length}`
+            : form.topic || "all",
+          mode: useUserPicker ? "users" : useTokens ? "tokens" : "topic",
           body: form.body,
           deliveryStatus: r?.deliveryStatus,
           successCount: r?.successCount,
           failureCount: r?.failureCount,
+          recipients: r?.recipients,
         },
         adminUser,
       );
@@ -941,7 +1219,10 @@ function NotificationPanel({ open, onClose }) {
       ) {
         setResult({
           ok: true,
-          msg: useTokens
+          msg: useUserPicker
+            ? `Saved and pushed to ${r.successCount} of ${r.recipients} recipients` +
+              (r.failureCount ? ` (${r.failureCount} failed).` : ".")
+            : useTokens
             ? `Saved and pushed to ${r.successCount} device(s)${
                 r.failureCount ? ` (${r.failureCount} failed)` : ""
               }.`
@@ -957,7 +1238,9 @@ function NotificationPanel({ open, onClose }) {
       } else if (r?.deliveryStatus === "no_tokens") {
         setResult({
           ok: false,
-          msg: "Saved, but no devices have registered an FCM token yet.",
+          msg: useUserPicker
+            ? `Saved to ${r.recipients} inbox(es), but none of them have a registered device.`
+            : "Saved, but no devices have registered an FCM token yet.",
         });
       } else {
         setResult({
@@ -968,7 +1251,13 @@ function NotificationPanel({ open, onClose }) {
         });
       }
       setTimeout(() => setResult(null), 6000);
-      setForm({ title: "", body: "", topic: "all", mode: "topic" });
+      setForm({
+        title: "",
+        body: "",
+        topic: "all",
+        mode: "topic",
+        selectedUids: [],
+      });
     } catch (e) {
       setResult({ ok: false, msg: e.message || "Send failed." });
     } finally {
@@ -1126,19 +1415,6 @@ function NotificationPanel({ open, onClose }) {
                   }}
                 />
               </FG>
-              <FG label="Recipients">
-                <Sel
-                  value={form.topic}
-                  onChange={(e) =>
-                    setForm((p) => ({ ...p, topic: e.target.value }))
-                  }
-                >
-                  <option value="all">All Users</option>
-                  <option value="karachi">Karachi Only</option>
-                  <option value="lahore">Lahore Only</option>
-                  <option value="vendors">All Vendors</option>
-                </Sel>
-              </FG>
               <FG label="Delivery method">
                 <Sel
                   value={form.mode}
@@ -1146,10 +1422,39 @@ function NotificationPanel({ open, onClose }) {
                     setForm((p) => ({ ...p, mode: e.target.value }))
                   }
                 >
-                  <option value="topic">Topic broadcast (fastest)</option>
-                  <option value="tokens">Per-device tokens (works on older APKs)</option>
+                  <option value="topic">Topic broadcast — by audience (fastest)</option>
+                  <option value="tokens">Per-device tokens — by audience</option>
+                  <option value="users">Specific people — pick from a list</option>
                 </Sel>
               </FG>
+              {form.mode !== "users" && (
+                <FG label="Recipients">
+                  <Sel
+                    value={form.topic}
+                    onChange={(e) =>
+                      setForm((p) => ({ ...p, topic: e.target.value }))
+                    }
+                  >
+                    <option value="all">All Users</option>
+                    <option value="karachi">Karachi Only</option>
+                    <option value="lahore">Lahore Only</option>
+                    <option value="vendors">All Vendors</option>
+                  </Sel>
+                </FG>
+              )}
+              {form.mode === "users" && (
+                <FG label="Pick recipients">
+                  <RecipientPicker
+                    users={users}
+                    vendors={vendors}
+                    value={form.selectedUids}
+                    onChange={(next) =>
+                      setForm((p) => ({ ...p, selectedUids: next }))
+                    }
+                    t={t}
+                  />
+                </FG>
+              )}
               <Btn
                 variant="primary"
                 onClick={handleSend}
@@ -4266,13 +4571,14 @@ function auditActionMeta(action) {
 
 function Notifications_Page() {
   const t = useTheme();
-  const { notifications, adminUser } = useAdmin();
+  const { notifications, adminUser, users, vendors } = useAdmin();
   // mode: see NotificationPanel above for full description.
   const [form, setForm] = useState({
     title: "",
     body: "",
     topic: "all",
     mode: "topic",
+    selectedUids: [],
   });
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
@@ -4289,6 +4595,10 @@ function Notifications_Page() {
       setResult({ ok: false, msg: "Body must be 3–500 characters." });
       return;
     }
+    if (form.mode === "users" && form.selectedUids.length === 0) {
+      setResult({ ok: false, msg: "Pick at least one recipient." });
+      return;
+    }
     setSending(true);
     setResult(null);
     try {
@@ -4297,10 +4607,18 @@ function Notifications_Page() {
         (form.topic === "all" ||
           form.topic === "users" ||
           form.topic === "vendors");
+      const useUserPicker = form.mode === "users";
 
       const audience = form.topic === "vendors" ? "vendors" : "users";
 
-      const r = useTokens
+      const r = useUserPicker
+        ? await sendNotificationToUsers({
+            title,
+            body,
+            uids: form.selectedUids,
+            sentBy: adminUser?.email || "admin",
+          })
+        : useTokens
         ? await sendNotificationToAudience({
             title,
             body,
@@ -4317,12 +4635,15 @@ function Notifications_Page() {
         form.topic || "all",
         {
           entityName: form.title,
-          topic: form.topic || "all",
-          mode: useTokens ? "tokens" : "topic",
+          topic: useUserPicker
+            ? `selected:${form.selectedUids.length}`
+            : form.topic || "all",
+          mode: useUserPicker ? "users" : useTokens ? "tokens" : "topic",
           body: form.body,
           deliveryStatus: r?.deliveryStatus,
           successCount: r?.successCount,
           failureCount: r?.failureCount,
+          recipients: r?.recipients,
         },
         adminUser,
       );
@@ -4332,7 +4653,10 @@ function Notifications_Page() {
       ) {
         setResult({
           ok: true,
-          msg: useTokens
+          msg: useUserPicker
+            ? `Saved and pushed to ${r.successCount} of ${r.recipients} recipients` +
+              (r.failureCount ? ` (${r.failureCount} failed).` : ".")
+            : useTokens
             ? `Saved and pushed to ${r.successCount} device(s)${
                 r.failureCount ? ` (${r.failureCount} failed)` : ""
               }.`
@@ -4348,7 +4672,9 @@ function Notifications_Page() {
       } else if (r?.deliveryStatus === "no_tokens") {
         setResult({
           ok: false,
-          msg: "Saved, but no devices have registered an FCM token yet.",
+          msg: useUserPicker
+            ? `Saved to ${r.recipients} inbox(es), but none of them have a registered device.`
+            : "Saved, but no devices have registered an FCM token yet.",
         });
       } else {
         setResult({
@@ -4359,7 +4685,13 @@ function Notifications_Page() {
         });
       }
       setTimeout(() => setResult(null), 6000);
-      setForm({ title: "", body: "", topic: "all", mode: "topic" });
+      setForm({
+        title: "",
+        body: "",
+        topic: "all",
+        mode: "topic",
+        selectedUids: [],
+      });
     } catch (e) {
       setResult({ ok: false, msg: e.message || "Send failed." });
     } finally {
@@ -4420,27 +4752,41 @@ function Notifications_Page() {
             }}
           />
         </FG>
-        <FG label="Recipients">
-          <Sel
-            value={form.topic}
-            onChange={(e) => set("topic", e.target.value)}
-          >
-            <option value="all">All Users (everyone)</option>
-            <option value="users">End Users only</option>
-            <option value="vendors">All Vendors</option>
-            <option value="karachi">Karachi Only</option>
-            <option value="lahore">Lahore Only</option>
-          </Sel>
-        </FG>
         <FG label="Delivery method">
           <Sel
             value={form.mode}
             onChange={(e) => set("mode", e.target.value)}
           >
-            <option value="topic">Topic broadcast (fastest)</option>
-            <option value="tokens">Per-device tokens (works on older APKs)</option>
+            <option value="topic">Topic broadcast — by audience (fastest)</option>
+            <option value="tokens">Per-device tokens — by audience</option>
+            <option value="users">Specific people — pick from a list</option>
           </Sel>
         </FG>
+        {form.mode !== "users" && (
+          <FG label="Recipients">
+            <Sel
+              value={form.topic}
+              onChange={(e) => set("topic", e.target.value)}
+            >
+              <option value="all">All Users (everyone)</option>
+              <option value="users">End Users only</option>
+              <option value="vendors">All Vendors</option>
+              <option value="karachi">Karachi Only</option>
+              <option value="lahore">Lahore Only</option>
+            </Sel>
+          </FG>
+        )}
+        {form.mode === "users" && (
+          <FG label="Pick recipients">
+            <RecipientPicker
+              users={users}
+              vendors={vendors}
+              value={form.selectedUids}
+              onChange={(next) => set("selectedUids", next)}
+              t={t}
+            />
+          </FG>
+        )}
         <Btn
           variant="primary"
           onClick={handleSend}
