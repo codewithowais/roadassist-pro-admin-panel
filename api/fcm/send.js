@@ -21,12 +21,36 @@ import { readJsonBody, send } from "../_lib/http.js";
 
 const MAX_MULTICAST_TOKENS = 500; // FCM hard limit per multicast call.
 
+// Topics admins are allowed to broadcast to. Anything outside this set is
+// rejected so a compromised admin token can't pump messages into arbitrary
+// FCM topics. Add new audience topics here as they're rolled out.
+const ALLOWED_TOPICS = new Set([
+  "all",
+  "customers",
+  "vendors",
+  "karachi",
+  "lahore",
+  "islamabad",
+]);
+
 function initAdmin() {
   if (admin.apps.length) return;
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) throw new Error("FIREBASE_SERVICE_ACCOUNT env var missing");
   const sa = JSON.parse(raw);
   admin.initializeApp({ credential: admin.credential.cert(sa) });
+}
+
+/// Reads `app_config/flags` and returns the live runtime feature flags.
+/// Used to honor the admin's `fcmPushEnabled` kill-switch — flipping it
+/// off in the panel silences all pushes without touching this file.
+async function readRuntimeFlags() {
+  try {
+    const snap = await admin.firestore().doc("app_config/flags").get();
+    return snap.exists ? snap.data() || {} : {};
+  } catch {
+    return {};
+  }
 }
 
 export default async function handler(req, res) {
@@ -69,8 +93,30 @@ export default async function handler(req, res) {
       max: MAX_MULTICAST_TOKENS,
     });
 
+  // Topic whitelist — reject arbitrary topic names so a stolen admin
+  // token can't be used to flood unrelated FCM topics.
+  if (topic && !ALLOWED_TOPICS.has(topic))
+    return send(res, 400, {
+      error: "topic_not_allowed",
+      allowed: Array.from(ALLOWED_TOPICS),
+    });
+
   try {
     initAdmin();
+
+    // Honor the runtime kill-switch. When `fcmPushEnabled === false` we
+    // record the request as suppressed instead of dispatching it. The
+    // admin panel surfaces this state in the notification history so an
+    // admin can tell the difference between "delivered" and "blocked by
+    // flag".
+    const flags = await readRuntimeFlags();
+    if (flags.fcmPushEnabled === false) {
+      return send(res, 200, {
+        mode: "suppressed",
+        reason: "fcmPushEnabled flag is off",
+      });
+    }
+
     const messaging = admin.messaging();
 
     // Multi-token fan-out (per-token fallback path).

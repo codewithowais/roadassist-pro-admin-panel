@@ -10,6 +10,7 @@
 import admin from "firebase-admin";
 import { verifyAdmin } from "../_lib/auth.js";
 import { readJsonBody, send } from "../_lib/http.js";
+import { rateLimit } from "../_lib/rate_limit.js";
 
 function initAdmin() {
   if (admin.apps.length) return;
@@ -24,6 +25,22 @@ const ALLOWED_ROLES = new Set(["manager", "support", "viewer"]);
 export default async function handler(req, res) {
   if (req.method !== "POST")
     return send(res, 405, { error: "method_not_allowed" });
+
+  // Cap admin invitations at 5/min/IP — defense in depth on top of the
+  // role check below. A compromised admin token can still invite, but
+  // not in a tight loop.
+  const limited = rateLimit(req, {
+    key: "admin-invite",
+    max: 5,
+    windowMs: 60_000,
+  });
+  if (limited) {
+    res.setHeader("Retry-After", String(limited.retryAfter));
+    return send(res, 429, {
+      error: "rate_limited",
+      retryAfter: limited.retryAfter,
+    });
+  }
 
   let caller;
   try {
