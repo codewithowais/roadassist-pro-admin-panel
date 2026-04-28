@@ -5,12 +5,19 @@
 //  On submit → writes to Firestore vendors collection (status: pending)
 //  Admin sees it in the KYC queue and approves/rejects.
 // ─────────────────────────────────────────────────────────────────
-import { useState, useRef } from "react";
-import { submitVendorApplication, uploadFile, auth } from "./firebase";
+import { useState, useRef, useEffect } from "react";
+import {
+  submitVendorApplication,
+  uploadFile,
+  auth,
+  db,
+  getFeatureFlags,
+} from "./firebase";
 import {
   createUserWithEmailAndPassword,
   signOut as fbSignOut,
 } from "firebase/auth";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { v as V, check } from "./validators";
 
 // Stable per-form-instance id used as the R2 path prefix for this
@@ -75,6 +82,19 @@ export default function VendorRegister() {
   const [done, setDone] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
+  // Live read of `app_config/flags.vendorSelfRegistration`. When admin
+  // turns it off we render a "registration is currently closed" screen
+  // instead of the form. Flag flips reach this page within a few seconds
+  // of being saved without needing a page reload.
+  const [flagsLoaded, setFlagsLoaded] = useState(false);
+  const [registrationOpen, setRegistrationOpen] = useState(true);
+  useEffect(() => {
+    const unsub = getFeatureFlags((f) => {
+      setRegistrationOpen(f.vendorSelfRegistration !== false);
+      setFlagsLoaded(true);
+    });
+    return unsub;
+  }, []);
   const [uploads, setUploads] = useState({
     cnic: null,
     license: null,
@@ -191,6 +211,29 @@ export default function VendorRegister() {
           form.password,
         );
         authUid = cred.user.uid;
+
+        // 1a. Mirror the vendor identity into users/{uid} so the mobile
+        //     app's role gate ('users.role == "vendor"') can route them
+        //     to the vendor dashboard. We do this BEFORE signing out so
+        //     the auth context still permits self-write per Firestore
+        //     rules. Failure is non-fatal — admin can backfill later.
+        try {
+          await setDoc(doc(db, "users", authUid), {
+            uid: authUid,
+            email: form.email.trim(),
+            phone: form.phone || "",
+            name: form.ownerName || form.businessName || "",
+            role: "vendor",
+            status: "active",
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            lastLoginAt: serverTimestamp(),
+          });
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn("[vendor-register] users doc write failed:", e);
+        }
+
         // Sign out immediately so /register stays an unauthenticated page.
         // The vendor's account exists in Firebase Auth either way.
         await fbSignOut(auth).catch(() => {});
@@ -259,6 +302,71 @@ export default function VendorRegister() {
     marginBottom: 6,
     display: "block",
   };
+
+  // ── Registration disabled screen — admin flipped the flag off
+  if (flagsLoaded && !registrationOpen) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: "linear-gradient(135deg,#fff7f0 0%,#f0f4ff 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 20,
+        }}
+      >
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: 24,
+            padding: 40,
+            maxWidth: 460,
+            textAlign: "center",
+            boxShadow: "0 20px 50px rgba(0,0,0,0.08)",
+          }}
+        >
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🚧</div>
+          <div
+            style={{
+              fontSize: 22,
+              fontWeight: 700,
+              color: "#0f172a",
+              marginBottom: 10,
+            }}
+          >
+            Registration is currently closed
+          </div>
+          <div
+            style={{
+              fontSize: 14,
+              color: "#475569",
+              lineHeight: 1.6,
+              marginBottom: 18,
+            }}
+          >
+            We're not accepting new vendor applications right now. Please check
+            back later or contact support to be added manually.
+          </div>
+          <a
+            href="mailto:support@roadassistpro.pk"
+            style={{
+              display: "inline-block",
+              background: "#f97316",
+              color: "white",
+              textDecoration: "none",
+              padding: "10px 20px",
+              borderRadius: 12,
+              fontWeight: 600,
+              fontSize: 14,
+            }}
+          >
+            Contact support
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   // ── Success screen
   if (done)
