@@ -80,6 +80,11 @@ import {
   deleteVendorDoc,
   onFCMMessage,
   adminCreateAuthAccount,
+  getEmergencyContacts,
+  addEmergencyContact,
+  updateEmergencyContact,
+  deleteEmergencyContact,
+  lookupUserByPhone,
 } from "./firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { getDoc, doc } from "firebase/firestore";
@@ -2757,6 +2762,7 @@ function Users() {
   const [roleFilter, setRoleFilter] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
   const [editUser, setEditUser] = useState(null);
+  const [contactsUser, setContactsUser] = useState(null);
 
   const userLabel = (u) => u.name || u.email || u.phone || "user";
   const userRole = (u) => (u.role === "vendor" || u.role === "admin" ? u.role : "customer");
@@ -2835,6 +2841,12 @@ function Users() {
         <AddUserModal
           existing={editUser}
           onClose={() => setEditUser(null)}
+        />
+      )}
+      {contactsUser && (
+        <EmergencyContactsModal
+          user={contactsUser}
+          onClose={() => setContactsUser(null)}
         />
       )}
       <div
@@ -2974,6 +2986,13 @@ function Users() {
                         >
                           Edit
                         </Btn>
+                        <Btn
+                          style={{ padding: "3px 8px", fontSize: 10 }}
+                          onClick={() => setContactsUser(u)}
+                          title="View / manage emergency contacts"
+                        >
+                          Contacts
+                        </Btn>
                         {(u.status || "active") === "active" ? (
                           <Btn
                             variant="danger"
@@ -3008,6 +3027,422 @@ function Users() {
         <Pager {...pager} />
       </Card>
     </>
+  );
+}
+
+// ── Emergency contacts modal ─────────────────────────────────────
+// Per-user emergency contacts (subcollection users/{uid}/emergencyContacts).
+// Shows the contacts the customer added for SOS, marks app-linked contacts,
+// and lets admin add / edit / delete on their behalf (e.g. correcting a
+// typo'd phone or pre-seeding for support cases).
+function normalisePhone(p) {
+  const c = (p || "").replace(/[\s\-()]/g, "");
+  if (c.startsWith("+92")) return c;
+  if (c.startsWith("0092")) return "+92" + c.slice(4);
+  if (c.startsWith("0")) return "+92" + c.slice(1);
+  if (c.startsWith("3")) return "+92" + c;
+  return c;
+}
+function isValidPakPhone(p) {
+  const c = (p || "").replace(/[\s\-()]/g, "");
+  return /^(\+92|0092|0)?3\d{9}$/.test(c);
+}
+
+function EmergencyContactsModal({ user, onClose }) {
+  const t = useTheme();
+  const { adminUser } = useAdmin();
+  const [contacts, setContacts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null); // null | "new" | contactObj
+  const userLabel = user.name || user.email || user.phone || "user";
+
+  useEffect(() => {
+    setLoading(true);
+    const unsub = getEmergencyContacts(user.id, (list) => {
+      setContacts(list);
+      setLoading(false);
+    });
+    return () => {
+      try { unsub && unsub(); } catch {}
+    };
+  }, [user.id]);
+
+  const handleDelete = async (c) => {
+    if (!window.confirm(`Delete emergency contact "${c.name}"?`)) return;
+    await deleteEmergencyContact(user.id, c.id);
+    await logAudit(
+      "emergency_contact_deleted",
+      "user",
+      user.id,
+      { entityName: userLabel, contactName: c.name, contactPhone: c.phone },
+      adminUser,
+    );
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "#0007",
+        zIndex: 200,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: t.card,
+          borderRadius: 14,
+          width: "min(560px,100%)",
+          maxHeight: "92vh",
+          overflow: "auto",
+          padding: 22,
+          color: t.text1,
+          border: `1px solid ${t.border}`,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 4,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 700 }}>
+              Emergency Contacts
+            </div>
+            <div style={{ fontSize: 12, color: t.muted, marginTop: 2 }}>
+              For {userLabel}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "none",
+              fontSize: 22,
+              cursor: "pointer",
+              color: t.muted,
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div
+          style={{
+            fontSize: 11,
+            color: t.muted,
+            background: t.input,
+            padding: 9,
+            borderRadius: 7,
+            border: `1px solid ${t.border}`,
+            marginBottom: 14,
+            lineHeight: 1.5,
+          }}
+        >
+          🆘 During SOS, app-linked contacts get a push notification + WhatsApp
+          message. Non-app contacts only get WhatsApp. Max 5 contacts per user.
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 20, textAlign: "center", color: t.muted }}>
+            Loading…
+          </div>
+        ) : contacts.length === 0 ? (
+          <div style={{ padding: 24, textAlign: "center", color: t.muted, fontSize: 13 }}>
+            No emergency contacts saved.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            {contacts.map((c) => (
+              <div
+                key={c.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "9px 11px",
+                  background: t.input,
+                  borderRadius: 9,
+                  border: `1px solid ${t.border}`,
+                }}
+              >
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: "50%",
+                    background: c.linkedUid ? "#22c55e22" : "#f9731622",
+                    color: c.linkedUid ? "#16a34a" : "#c2410c",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 700,
+                    fontSize: 12,
+                  }}
+                >
+                  {(c.name || "?").slice(0, 1).toUpperCase()}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>
+                    {c.name || "(no name)"}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: t.muted,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {c.phone}
+                  </div>
+                  <div style={{ marginTop: 3 }}>
+                    <span
+                      style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        padding: "2px 6px",
+                        borderRadius: 6,
+                        background: c.linkedUid ? "#22c55e22" : "#25d36622",
+                        color: c.linkedUid ? "#16a34a" : "#128c7e",
+                      }}
+                    >
+                      {c.linkedUid
+                        ? "📱 APP USER · push + whatsapp"
+                        : "💬 WHATSAPP ONLY"}
+                    </span>
+                  </div>
+                </div>
+                <Btn
+                  style={{ padding: "3px 8px", fontSize: 10 }}
+                  onClick={() => setEditing(c)}
+                >
+                  Edit
+                </Btn>
+                <Btn
+                  variant="danger"
+                  style={{ padding: "3px 8px", fontSize: 10 }}
+                  onClick={() => handleDelete(c)}
+                >
+                  Delete
+                </Btn>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginTop: 14,
+          }}
+        >
+          <div style={{ fontSize: 11, color: t.muted }}>
+            {contacts.length} / 5 contacts
+          </div>
+          <Btn
+            variant="primary"
+            onClick={() => setEditing("new")}
+            disabled={contacts.length >= 5}
+          >
+            + Add Contact
+          </Btn>
+        </div>
+
+        {editing && (
+          <ContactEditor
+            userId={user.id}
+            userLabel={userLabel}
+            existing={editing === "new" ? null : editing}
+            adminUser={adminUser}
+            onClose={() => setEditing(null)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContactEditor({ userId, userLabel, existing, adminUser, onClose }) {
+  const t = useTheme();
+  const [name, setName] = useState(existing?.name || "");
+  const [phone, setPhone] = useState(existing?.phone || "");
+  const [phoneErr, setPhoneErr] = useState(null);
+  const [lookup, setLookup] = useState(null); // { uid, name } | null
+  const [looking, setLooking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    setLookup(null);
+    setPhoneErr(null);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!isValidPakPhone(phone)) return;
+    debounceRef.current = setTimeout(async () => {
+      setLooking(true);
+      try {
+        const result = await lookupUserByPhone(normalisePhone(phone));
+        if (result && result.uid !== userId) {
+          setLookup(result);
+          if (!name && result.name) setName(result.name);
+        }
+      } catch {}
+      setLooking(false);
+    }, 500);
+    return () => debounceRef.current && clearTimeout(debounceRef.current);
+  }, [phone]);
+
+  const handleSave = async () => {
+    if (!isValidPakPhone(phone)) {
+      setPhoneErr("Enter a valid Pakistani number (03xx xxxxxxx)");
+      return;
+    }
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      const payload = {
+        name: name.trim(),
+        phone: normalisePhone(phone),
+        linkedUid: lookup?.uid || null,
+      };
+      if (existing) {
+        await updateEmergencyContact(userId, existing.id, payload);
+        await logAudit(
+          "emergency_contact_updated",
+          "user",
+          userId,
+          { entityName: userLabel, contactName: payload.name },
+          adminUser,
+        );
+      } else {
+        await addEmergencyContact(userId, payload);
+        await logAudit(
+          "emergency_contact_created",
+          "user",
+          userId,
+          { entityName: userLabel, contactName: payload.name },
+          adminUser,
+        );
+      }
+      onClose();
+    } catch (e) {
+      alert("Failed: " + (e?.message || "unknown error"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "#0009",
+        zIndex: 250,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: t.card,
+          borderRadius: 12,
+          width: "min(420px,100%)",
+          padding: 20,
+          color: t.text1,
+          border: `1px solid ${t.border}`,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
+          {existing ? "Edit Contact" : "Add Contact"}
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ fontSize: 11, color: t.muted, display: "block", marginBottom: 4 }}>
+            Name
+          </label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Ahmed (Brother)"
+            style={{
+              width: "100%",
+              padding: "7px 9px",
+              borderRadius: 6,
+              background: t.input,
+              border: `1px solid ${t.border}`,
+              color: t.text1,
+              fontSize: 13,
+            }}
+          />
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ fontSize: 11, color: t.muted, display: "block", marginBottom: 4 }}>
+            Phone (Pakistani)
+          </label>
+          <input
+            type="text"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="03001234567"
+            style={{
+              width: "100%",
+              padding: "7px 9px",
+              borderRadius: 6,
+              background: t.input,
+              border: `1px solid ${phoneErr ? "#dc2626" : t.border}`,
+              color: t.text1,
+              fontSize: 13,
+              fontFamily: "monospace",
+            }}
+          />
+          {phoneErr && (
+            <div style={{ fontSize: 10, color: "#dc2626", marginTop: 3 }}>
+              {phoneErr}
+            </div>
+          )}
+        </div>
+        <div
+          style={{
+            padding: 9,
+            borderRadius: 7,
+            background: lookup ? "#22c55e10" : "#f5f5f510",
+            border: `1px solid ${lookup ? "#22c55e44" : t.border}`,
+            fontSize: 11,
+            marginBottom: 12,
+            minHeight: 30,
+            color: lookup ? "#16a34a" : t.muted,
+          }}
+        >
+          {looking
+            ? "🔍 Checking if this phone is on RoadAssist…"
+            : lookup
+            ? `📱 Linked to app user "${lookup.name || lookup.uid}" — they will get a push notification + WhatsApp.`
+            : isValidPakPhone(phone)
+            ? "💬 Not on app — they will get a WhatsApp message during SOS."
+            : "Enter a phone number to check link status."}
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" disabled={!name.trim() || saving} onClick={handleSave}>
+            {saving ? "Saving…" : "Save"}
+          </Btn>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -4125,9 +4560,21 @@ function Requests() {
 
 function SOS_Page() {
   const t = useTheme();
-  const { sos } = useAdmin();
+  const { sos, users } = useAdmin();
   const active = sos.filter((s) => !s.resolved);
   const resolved = sos.filter((s) => s.resolved);
+  // Helper: enrich an SOS doc with the sender's user info if missing.
+  // Older clients only wrote `userId`; newer ones also write `userName`/`userEmail`.
+  const enrich = (s) => {
+    if (s.userName && s.userEmail) return s;
+    const u = users.find((x) => x.id === s.userId);
+    return {
+      ...s,
+      userName: s.userName || u?.name || u?.email || "Unknown user",
+      userEmail: s.userEmail || u?.email || "",
+      userPhone: s.userPhone || u?.phone || "",
+    };
+  };
   return (
     <>
       <div
@@ -4171,56 +4618,80 @@ function SOS_Page() {
           {active.length === 0 ? (
             <Empty icon="✅" text="No active SOS alerts" />
           ) : (
-            active.map((s, i) => (
-              <div
-                key={s.id || i}
-                style={{
-                  background: "#dc26260d",
-                  border: "1px solid #dc262622",
-                  borderRadius: 8,
-                  padding: "10px 12px",
-                  marginBottom: 7,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                }}
-              >
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: "#ef4444",
-                    flexShrink: 0,
-                  }}
-                />
-                <div style={{ flex: 1 }}>
-                  <div
-                    style={{ fontSize: 12, fontWeight: 600, color: t.text1 }}
-                  >
-                    {s.userName || s.user || "User"}
-                  </div>
-                  <div style={{ fontSize: 10, color: "#b45309", marginTop: 2 }}>
-                    {s.location || s.loc || "—"} ·{" "}
-                    {s.contactsNotified || s.contacts || 0} contacts
-                  </div>
-                  <div style={{ fontSize: 10, color: t.muted, marginTop: 1 }}>
-                    {s.createdAt?.toDate?.()?.toLocaleTimeString() || "—"}
-                  </div>
-                </div>
+            active.map(enrich).map((s, i) => {
+              const mapsUrl = s.lat && s.lng
+                ? `https://maps.google.com/?q=${s.lat},${s.lng}`
+                : null;
+              return (
                 <div
-                  style={{ display: "flex", flexDirection: "column", gap: 5 }}
+                  key={s.id || i}
+                  style={{
+                    background: "#dc26260d",
+                    border: "1px solid #dc262622",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    marginBottom: 7,
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                  }}
                 >
-                  <Btn
-                    variant="success"
-                    style={{ padding: "2px 8px", fontSize: 10 }}
-                    onClick={() => resolveSOS(s.id)}
+                  <span
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      background: "#ef4444",
+                      flexShrink: 0,
+                      marginTop: 6,
+                    }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{ fontSize: 12, fontWeight: 700, color: t.text1 }}
+                    >
+                      {s.userName}
+                    </div>
+                    {s.userEmail && (
+                      <div style={{ fontSize: 10, color: t.muted, fontFamily: "monospace" }}>
+                        {s.userEmail}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 10, color: "#b45309", marginTop: 3 }}>
+                      📍{" "}
+                      {mapsUrl ? (
+                        <a
+                          href={mapsUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ color: "#b45309", textDecoration: "underline" }}
+                        >
+                          {s.lat?.toFixed?.(4)}, {s.lng?.toFixed?.(4)}
+                        </a>
+                      ) : (
+                        "—"
+                      )}{" "}
+                      · {s.contactsNotified || 0} contacts
+                      {s.appUsersPushed > 0 && ` · ${s.appUsersPushed} pushed`}
+                    </div>
+                    <div style={{ fontSize: 10, color: t.muted, marginTop: 1 }}>
+                      {s.createdAt?.toDate?.()?.toLocaleString() || "—"}
+                    </div>
+                  </div>
+                  <div
+                    style={{ display: "flex", flexDirection: "column", gap: 5 }}
                   >
-                    Resolve
-                  </Btn>
+                    <Btn
+                      variant="success"
+                      style={{ padding: "2px 8px", fontSize: 10 }}
+                      onClick={() => resolveSOS(s.id)}
+                    >
+                      Resolve
+                    </Btn>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </Card>
         <Card>
