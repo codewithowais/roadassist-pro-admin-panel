@@ -484,15 +484,23 @@ export const sendNotificationToAudience = async ({
     status: "sent",
   });
 
-  // 2. Pull tokens from Firestore. Skip docs without an fcmToken (signed-out
-  //    or never-launched accounts).
-  const sourceCollection = audience === "vendors" ? COLS.vendors : COLS.users;
-  const snap = await getDocs(collection(db, sourceCollection));
-  const tokens = [];
-  snap.forEach((d) => {
+  // 2. Pull tokens from Firestore. FCM tokens live on `users/{uid}` for
+  //    BOTH customers and vendors — vendor docs don't carry fcmToken.
+  //    So we always walk users/, filtered by role for vendor audiences.
+  //    Stale tokens (orphaned on previous owners after a sign-out before
+  //    we added the cleanup path) are deduped via a Set so the same
+  //    physical device receives at most one notification.
+  const usersSnap = audience === "vendors"
+    ? await getDocs(
+        query(collection(db, COLS.users), where("role", "==", "vendor")),
+      )
+    : await getDocs(collection(db, COLS.users));
+  const tokenSet = new Set();
+  usersSnap.forEach((d) => {
     const t = d.data()?.fcmToken;
-    if (typeof t === "string" && t.length > 0) tokens.push(t);
+    if (typeof t === "string" && t.length > 0) tokenSet.add(t);
   });
+  const tokens = Array.from(tokenSet);
 
   if (tokens.length === 0) {
     return {
