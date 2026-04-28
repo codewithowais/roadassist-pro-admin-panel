@@ -70,11 +70,15 @@ import {
   getAuditLog,
   getAppConfig,
   saveAppConfig,
+  getFeatureFlags,
+  saveFeatureFlags,
+  DEFAULT_FLAGS,
   logAudit,
   uploadFile,
   viewVendorDoc,
   deleteVendorDoc,
   onFCMMessage,
+  adminCreateAuthAccount,
 } from "./firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { getDoc, doc } from "firebase/firestore";
@@ -172,9 +176,16 @@ const getBadgePalette = (primary) => ({
   purple: { bg: "#a855f718", color: "#7c3aed", border: "#a855f733" },
 });
 const BADGE_MAP = {
+  // Service request statuses (canonical Flutter enum, see
+  // service_request_model.dart). `pending`/`in_progress` are LEGACY aliases
+  // kept so old Firestore docs still render with the right colour. New
+  // writes use the canonical names.
   completed: "green",
+  arrived: "green",
+  onTheWay: "orange",
   in_progress: "orange",
   accepted: "blue",
+  requested: "yellow",
   pending: "yellow",
   cancelled: "red",
   verified: "green",
@@ -1249,6 +1260,16 @@ function AddVendorModal({ onClose, existing }) {
     operatingHours: existing?.operatingHours || "9am-9pm",
     costRange: existing?.costRange || "",
     status: existing?.status || "pending",
+    vehicleReg: existing?.vehicleReg || "",
+    // Login credentials. Required for new vendors so they can sign into
+    // the mobile app. On edit we leave them blank — the auth account
+    // already exists, identified by `authUid` below.
+    email: existing?.email || "",
+    password: "",
+    // Existing Firebase Auth UID. Auto-populated from the vendor doc so
+    // admin can verify or edit the link. If empty when adding, we'll
+    // create a new account from email/password.
+    authUid: existing?.authUid || "",
   }));
   // R2 paths — prefilled from existing.documents in edit mode. We keep a
   // snapshot of the original paths so cancel/submit can correctly clean up
@@ -1289,6 +1310,19 @@ function AddVendorModal({ onClose, existing }) {
     e.operatingHours = V.maxLength(60, "Too long")(form.operatingHours || "");
     if (form.costRange && form.costRange.trim()) {
       e.costRange = V.costRange(form.costRange);
+    }
+    // Auth credentials: required when adding a new vendor unless the admin
+    // is linking an existing Firebase Auth account by uid.
+    if (!editing) {
+      const hasAuthUid = (form.authUid || "").trim().length > 0;
+      if (!hasAuthUid) {
+        if (!form.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
+          e.email = "Vendor login email is required";
+        }
+        if (!form.password || form.password.length < 6) {
+          e.password = "At least 6 characters";
+        }
+      }
     }
     for (const k of Object.keys(e)) if (!e[k]) delete e[k];
     setFieldErrs(e);
@@ -1331,12 +1365,64 @@ function AddVendorModal({ onClose, existing }) {
       // If admin picks "verified" in the Status field, treat the vendor as
       // KYC-approved too — they're skipping the queue.
       const isVerified = form.status === "verified";
+
+      // Resolve the vendor's Firebase Auth uid:
+      //   • Edit mode  → reuse existing.authUid
+      //   • Admin pasted a uid → use that (links to an existing account)
+      //   • Otherwise (new vendor + email/password) → create the account
+      //     server-side via /api/users/create with role:'vendor'. The API
+      //     also writes users/{uid} with role so the mobile app routes
+      //     them to the vendor surface on first sign-in.
+      let resolvedAuthUid = (form.authUid || "").trim();
+      if (!editing && !resolvedAuthUid) {
+        try {
+          const created = await adminCreateAuthAccount({
+            email: form.email.trim(),
+            password: form.password,
+            name: form.name,
+            phone: form.phone,
+            role: "vendor",
+          });
+          resolvedAuthUid = created.uid;
+        } catch (authErr) {
+          const code = authErr.code || authErr.message || "";
+          if (code === "email_already_exists") {
+            setFieldErrs((p) => ({
+              ...p,
+              email:
+                "An account with this email already exists. Paste its UID below to link it.",
+            }));
+          } else if (code === "invalid_email") {
+            setFieldErrs((p) => ({ ...p, email: "Invalid email address." }));
+          } else if (code === "password_min_6") {
+            setFieldErrs((p) => ({
+              ...p,
+              password: "Password must be at least 6 characters.",
+            }));
+          } else {
+            setErr("Couldn't create the vendor's login account: " + code);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Strip credential fields from the vendor doc — they live in
+      // Firebase Auth, not Firestore.
+      const { password, ...formForVendorDoc } = form;
       const payload = {
-        ...form,
+        ...formForVendorDoc,
         businessName: form.name,
+        ownerName: existing?.ownerName || form.name,
         applicationId,
+        authUid: resolvedAuthUid,
         kyc: isVerified ? "approved" : existing?.kyc || "pending",
         isVerified,
+        // Source field is required by SCHEMA.md. Self-registration sets
+        // it to 'self_registration'; admin-created vendors are 'seed'.
+        // Preserve existing value on edits so we don't lose the original
+        // origin marker.
+        source: existing?.source || "seed",
         lat: parseFloat(form.lat) || 24.8607,
         lng: parseFloat(form.lng) || 67.0011,
         documents: {
@@ -1608,6 +1694,82 @@ function AddVendorModal({ onClose, existing }) {
                   letterSpacing: 0.4,
                 }}
               >
+                {editing ? "Login Account" : "Login Credentials *"}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: t.muted,
+                  marginBottom: 10,
+                  lineHeight: 1.5,
+                }}
+              >
+                {editing
+                  ? "This vendor's mobile-app login is identified by the Auth UID below. Leave it blank if you haven't created an account for them yet."
+                  : "We'll create a Firebase Auth account so the vendor can sign into the mobile app and accept jobs. If they already have an account (e.g. they self-registered), paste the existing Auth UID instead."}
+              </div>
+              {!editing && (
+                <div
+                  className="ra-form-grid"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 12,
+                    marginBottom: 10,
+                  }}
+                >
+                  <FG label="Login email" error={fieldErrs.email}>
+                    <Inp
+                      value={form.email}
+                      onChange={(e) => set("email", e.target.value)}
+                      placeholder="vendor@example.com"
+                      type="email"
+                      autoComplete="off"
+                      maxLength={120}
+                      invalid={!!fieldErrs.email}
+                    />
+                  </FG>
+                  <FG label="Login password" error={fieldErrs.password}>
+                    <Inp
+                      value={form.password}
+                      onChange={(e) => set("password", e.target.value)}
+                      placeholder="At least 6 characters"
+                      type="password"
+                      autoComplete="new-password"
+                      maxLength={120}
+                      invalid={!!fieldErrs.password}
+                    />
+                  </FG>
+                </div>
+              )}
+              <FG label="Auth UID (optional — link existing account)">
+                <Inp
+                  value={form.authUid}
+                  onChange={(e) => set("authUid", e.target.value)}
+                  placeholder="abc123XYZ…"
+                  maxLength={64}
+                  autoComplete="off"
+                />
+              </FG>
+            </div>
+            <div
+              style={{
+                gridColumn: "1/-1",
+                borderTop: `1px solid ${t.border}`,
+                paddingTop: 12,
+                marginTop: 4,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: t.muted,
+                  fontWeight: 600,
+                  marginBottom: 8,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.4,
+                }}
+              >
                 Documents (optional)
               </div>
               <div style={{ display: "grid", gap: 8 }}>
@@ -1702,8 +1864,10 @@ function Dashboard() {
     fontSize: 11,
     color: t.text1,
   };
-  const liveJobs = requests.filter(
-    (r) => r.status === "in_progress" || r.status === "accepted",
+  // "Live" = anything currently being worked on. Includes legacy
+  // `in_progress` so we don't lose count of older Firestore docs.
+  const liveJobs = requests.filter((r) =>
+    ["accepted", "onTheWay", "arrived", "in_progress"].includes(r.status),
   ).length;
   const sosToday = sos.filter((s) => {
     if (!s.createdAt?.toDate) return false;
@@ -3174,13 +3338,17 @@ function Vendors() {
 
 function Requests() {
   const t = useTheme();
-  const { requests, adminUser } = useAdmin();
+  const { requests, adminUser, vendors } = useAdmin();
   const [statusF, setStatusF] = useState("all");
+  // Canonical service-request statuses match the Flutter enum
+  // (service_request_model.dart). Anything outside this set is legacy
+  // data and gets surfaced with the original label.
   const statuses = [
     "all",
-    "pending",
+    "requested",
     "accepted",
-    "in_progress",
+    "onTheWay",
+    "arrived",
     "completed",
     "cancelled",
   ];
@@ -3188,16 +3356,44 @@ function Requests() {
     (r) => statusF === "all" || r.status === statusF,
   );
   const [selected, setSelected] = useState(null);
+  const [reassignTarget, setReassignTarget] = useState("");
 
-  const handleCancel = async (r) => {
-    if (!window.confirm("Cancel this request?")) return;
+  const handleCancel = async (r, reason = "Cancelled by admin") => {
+    if (!window.confirm("Force-cancel this request?")) return;
     await updateRequestStatus(r.id, "cancelled");
+    // Best-effort: stamp who cancelled and why so the audit story is
+    // complete even if the audit_log write below fails. Also write a
+    // notification to the customer with the reason so they know why
+    // their request closed without explanation.
+    try {
+      const { doc, updateDoc, addDoc, collection, serverTimestamp } =
+        await import("firebase/firestore");
+      const { db, COLS } = await import("./firebase");
+      await updateDoc(doc(db, COLS.requests, r.id), {
+        cancelledBy: "admin",
+        cancelReason: reason,
+      });
+      if (r.userId) {
+        await addDoc(collection(db, COLS.notifications), {
+          userId: r.userId,
+          type: "serviceUpdate",
+          title: "Your request was cancelled",
+          body: reason || "An admin cancelled your service request.",
+          isRead: false,
+          createdAt: serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[admin] cancel reason stamp / notify failed:", e);
+    }
     await logAudit(
       "request_cancelled",
       "request",
       r.id,
       {
         entityName: r.vendorName || r.vendor || r.customerName || r.cust || r.id,
+        reason,
       },
       adminUser,
     );
@@ -3217,6 +3413,83 @@ function Requests() {
       },
       adminUser,
     );
+  };
+
+  const handleForceComplete = async (r) => {
+    if (
+      !window.confirm(
+        "Force-complete this request? The customer will see it as done immediately.",
+      )
+    )
+      return;
+    await handleStatusChange(r, "completed");
+  };
+
+  const handleReassign = async (r, newVendorId) => {
+    if (!newVendorId || newVendorId === r.vendorId) return;
+    const newVendor = vendors.find((v) => v.id === newVendorId);
+    if (!newVendor) return;
+    if (
+      !window.confirm(
+        `Reassign this job to ${newVendor.businessName || newVendor.name || "selected vendor"}?`,
+      )
+    )
+      return;
+    try {
+      const {
+        doc,
+        updateDoc,
+        addDoc,
+        collection,
+        serverTimestamp,
+      } = await import("firebase/firestore");
+      const { db, COLS } = await import("./firebase");
+      await updateDoc(doc(db, COLS.requests, r.id), {
+        vendorId: newVendorId,
+        vendorName: newVendor.businessName || newVendor.name || "",
+        // Reset status so the new vendor's side picks it up as a fresh
+        // incoming job instead of one that's already been accepted.
+        status: "requested",
+        acceptedAt: null,
+        mechanicName: "",
+        mechanicVehicle: "",
+        mechanicLat: null,
+        mechanicLng: null,
+      });
+      // Notify the new vendor so they don't have to be staring at the
+      // app to know a job just landed in their queue.
+      if (newVendor.authUid) {
+        try {
+          await addDoc(collection(db, COLS.notifications), {
+            userId: newVendor.authUid,
+            type: "systemInfo",
+            title: "New job assigned to you",
+            body: `Admin assigned a ${r.category || "service"} request. Open the app to accept it.`,
+            isRead: false,
+            createdAt: serverTimestamp(),
+          });
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn("[admin] reassign notify failed:", e);
+        }
+      }
+      await logAudit(
+        "request_reassigned",
+        "request",
+        r.id,
+        {
+          entityName: r.vendorName || "—",
+          newVendorId,
+          newVendorName: newVendor.businessName || newVendor.name || "",
+        },
+        adminUser,
+      );
+      setReassignTarget("");
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("[admin] reassign failed", e);
+      alert("Reassign failed: " + (e.message || e));
+    }
   };
 
   const TlDot = ({ state }) => {
@@ -3360,27 +3633,38 @@ function Requests() {
                   background: t.border,
                 }}
               />
-              {[
-                ["Requested", "done"],
-                [
-                  "Accepted",
-                  ["accepted", "in_progress", "completed"].includes(
-                    selected.status,
-                  )
-                    ? "done"
-                    : "pending",
-                ],
-                [
-                  "On the Way",
-                  ["in_progress", "completed"].includes(selected.status)
-                    ? "done"
-                    : "pending",
-                ],
-                [
-                  "Completed",
-                  selected.status === "completed" ? "done" : "pending",
-                ],
-              ].map(([lbl, state]) => (
+              {(() => {
+                const s = selected.status;
+                const isCancelled = s === "cancelled";
+                const reachedAccepted = [
+                  "accepted",
+                  "onTheWay",
+                  "arrived",
+                  "in_progress",
+                  "completed",
+                ].includes(s);
+                const reachedOnTheWay = [
+                  "onTheWay",
+                  "arrived",
+                  "in_progress",
+                  "completed",
+                ].includes(s);
+                const reachedArrived = ["arrived", "completed"].includes(s);
+                const reachedCompleted = s === "completed";
+                if (isCancelled) {
+                  return [
+                    ["Requested", "done"],
+                    ["Cancelled", "active"],
+                  ];
+                }
+                return [
+                  ["Requested", "done"],
+                  ["Accepted", reachedAccepted ? "done" : "pending"],
+                  ["On the Way", reachedOnTheWay ? "done" : "pending"],
+                  ["Arrived", reachedArrived ? "done" : "pending"],
+                  ["Completed", reachedCompleted ? "done" : "pending"],
+                ];
+              })().map(([lbl, state]) => (
                 <div
                   key={lbl}
                   style={{ position: "relative", marginBottom: 12 }}
@@ -3400,31 +3684,85 @@ function Requests() {
             <div style={{ marginBottom: 8 }}>
               <FG label="Change Status">
                 <Sel
-                  value={selected.status || "pending"}
+                  value={selected.status || "requested"}
                   onChange={(e) => handleStatusChange(selected, e.target.value)}
                 >
-                  <option value="pending">Pending</option>
+                  <option value="requested">Requested</option>
                   <option value="accepted">Accepted</option>
-                  <option value="in_progress">In Progress</option>
+                  <option value="onTheWay">On the Way</option>
+                  <option value="arrived">Arrived</option>
                   <option value="completed">Completed</option>
                   <option value="cancelled">Cancelled</option>
                 </Sel>
               </FG>
             </div>
-            <div style={{ display: "flex", gap: 7 }}>
+            <div style={{ display: "flex", gap: 7, marginBottom: 10 }}>
               <Btn
+                variant="primary"
                 style={{ flex: 1, justifyContent: "center", fontSize: 11 }}
-                onClick={() => handleStatusChange(selected, "completed")}
+                onClick={() => handleForceComplete(selected)}
               >
-                Mark Complete
+                Force Complete
               </Btn>
               <Btn
                 variant="danger"
                 style={{ flex: 1, justifyContent: "center", fontSize: 11 }}
                 onClick={() => handleCancel(selected)}
               >
-                Cancel
+                Force Cancel
               </Btn>
+            </div>
+            <div
+              style={{
+                borderTop: `1px solid ${t.border}`,
+                marginTop: 8,
+                paddingTop: 10,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: t.muted,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.6,
+                  marginBottom: 6,
+                }}
+              >
+                Reassign vendor
+              </div>
+              <div style={{ display: "flex", gap: 7 }}>
+                <Sel
+                  value={reassignTarget}
+                  onChange={(e) => setReassignTarget(e.target.value)}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">Select a vendor…</option>
+                  {(vendors || [])
+                    .filter(
+                      (v) =>
+                        v.id !== selected.vendorId &&
+                        v.isVerified !== false &&
+                        !v.deletedAt,
+                    )
+                    .map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.businessName || v.name || v.id}
+                      </option>
+                    ))}
+                </Sel>
+                <Btn
+                  disabled={!reassignTarget}
+                  onClick={() => handleReassign(selected, reassignTarget)}
+                  style={{ fontSize: 11 }}
+                >
+                  Reassign
+                </Btn>
+              </div>
+              <div style={{ fontSize: 10, color: t.muted, marginTop: 6 }}>
+                Resets status to <code>requested</code> so the new vendor sees it as a
+                fresh incoming job.
+              </div>
             </div>
           </Card>
         )}
@@ -4380,6 +4718,7 @@ function Settings_Page() {
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         {[
           ["app", "App Config"],
+          ["flags", "Feature Flags"],
           ["zones", "Zones"],
           ["admins", "Admin Users"],
         ].map(([k, l]) => (
@@ -4591,9 +4930,393 @@ function Settings_Page() {
           </Card>
         </div>
       )}
+      {tab === "flags" && <FeatureFlagsTab />}
       {tab === "zones" && <ZonesTab />}
       {tab === "admins" && <AdminUsersTab />}
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Settings -> Feature Flags (live runtime toggles)
+// ─────────────────────────────────────────────────────────────────
+// Stored at app_config/flags. Both the Flutter app and this panel stream
+// the doc so flipping a switch propagates everywhere within seconds. Each
+// flag below maps to a real consumer in code — see FeatureFlagsService in
+// the Flutter app and the call sites in admin-panel/firebase.js.
+// Each flag here is written for a non-technical admin: the label says
+// what the user sees, and the description tells them in plain words what
+// happens when it's ON vs OFF and when they might want to flip it.
+const FLAG_GROUPS = [
+  {
+    title: "Vendors",
+    items: [
+      [
+        "vendorSelfRegistration",
+        "Allow vendors to sign themselves up",
+        "ON: anyone with the registration link can apply to join as a vendor. OFF: only you can add vendors from this panel. Turn off if you're getting too many low-quality applications.",
+      ],
+      [
+        "vendorAppEnabled",
+        "Vendors can log into the mobile app",
+        "ON: approved vendors can sign in and accept customer jobs. OFF: vendors are temporarily locked out of the app — useful during a system issue or update.",
+      ],
+      [
+        "kycStrict",
+        "Require ID and license before approving",
+        "ON: every vendor must upload CNIC, business license, and a photo before you can approve them. OFF: you can approve vendors with whatever documents they've provided.",
+      ],
+    ],
+  },
+  {
+    title: "Customer experience",
+    items: [
+      [
+        "liveLocationTracking",
+        "Show vendor's live location to customer",
+        "ON: while a vendor is on the way, the customer sees them moving on the map in real time. OFF: customer just sees a status (\"On the way\", \"Arrived\") without the moving pin.",
+      ],
+      [
+        "simulatedTrackingFallback",
+        "Demo mode (fake vendor moving)",
+        "ON: even with no real vendor active, the customer's tracking screen will pretend a vendor is on the way (auto-progressing every 8 seconds). Use only when showing the app to investors or for a demo. Keep OFF in production.",
+      ],
+      [
+        "autoCompleteOnArrived",
+        "Auto-finish job 2 seconds after \"Arrived\"",
+        "ON: the moment a vendor marks \"I've arrived\", the customer's screen wraps up the job automatically. OFF: the vendor has to also press \"Mark complete\" themselves.",
+      ],
+      [
+        "reviewsEnabled",
+        "Let customers leave a rating and review",
+        "ON: after a job is done, the customer is prompted to give the vendor 1–5 stars. OFF: no rating step — useful if you want to disable reviews during a problem period.",
+      ],
+    ],
+  },
+  {
+    title: "Notifications & alerts",
+    items: [
+      [
+        "fcmPushEnabled",
+        "Send push notifications at all",
+        "Master ON/OFF switch for all push notifications across the app. Turn OFF temporarily if push is broken or spamming users — nothing will be delivered until you turn it back on.",
+      ],
+      [
+        "autoNotifyVendorOnRequest",
+        "Auto-alert nearby vendors of a new request",
+        "ON: when a customer requests help, vendors get an instant push notification on their phone. OFF: no automatic ping — you'll have to call/notify vendors yourself.",
+      ],
+      [
+        "smsNotifications",
+        "Send SMS messages",
+        "ON: send updates by SMS as well as push (handy if a customer's app is closed). OFF: no SMS. Note: needs an SMS provider account configured — leave OFF if you haven't set one up.",
+      ],
+      [
+        "whatsappNotifications",
+        "Send WhatsApp messages",
+        "Same as SMS but via WhatsApp Business. ON: customers get WhatsApp notifications. OFF: nothing sent. Requires a WhatsApp Business account.",
+      ],
+    ],
+  },
+  {
+    title: "Other features",
+    items: [
+      [
+        "sosEnabled",
+        "Show the emergency SOS button",
+        "ON: customers see the red SOS button at the bottom of the home screen. OFF: SOS is hidden — only turn off if it's being misused or you don't have an emergency response plan in place.",
+      ],
+      [
+        "aiAssistantEnabled",
+        "Show the AI chat assistant",
+        "ON: customers can chat with the AI helper inside the app. OFF: the AI chat tab is hidden. Turn off if AI costs are too high or the assistant is giving bad answers.",
+      ],
+      [
+        "paymentCollection",
+        "Collect payments inside the app",
+        "ON: at the end of a job, customers pay through the app (JazzCash / Easypaisa). OFF: customers pay vendors directly in cash. Keep OFF until the payment provider is fully connected.",
+      ],
+    ],
+  },
+  {
+    title: "Maintenance",
+    items: [
+      [
+        "appUnderMaintenance",
+        "Show maintenance screen to everyone",
+        "ON: every user (customer and vendor) opening the app sees a friendly \"we'll be right back\" screen instead of the normal app. Use this while pushing a big update so people don't hit broken screens. Remember to turn it OFF after.",
+      ],
+    ],
+  },
+];
+
+function FeatureFlagsTab() {
+  const t = useTheme();
+  const { adminUser } = useAdmin();
+  const [flags, setFlags] = useState(DEFAULT_FLAGS);
+  const [savedSnapshot, setSavedSnapshot] = useState(DEFAULT_FLAGS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const unsub = getFeatureFlags((data) => {
+      setFlags(data);
+      setSavedSnapshot(data);
+      setLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  const setFlag = (k, v) => setFlags((p) => ({ ...p, [k]: v }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      // Compute the delta between what was saved and what's about to be
+      // saved so the audit log shows what actually changed instead of
+      // dumping the entire flag object on every save.
+      const delta = {};
+      for (const k of Object.keys(flags)) {
+        if (savedSnapshot[k] !== flags[k]) {
+          delta[k] = { from: savedSnapshot[k], to: flags[k] };
+        }
+      }
+      await saveFeatureFlags(flags);
+      await logAudit(
+        "feature_flags_updated",
+        "config",
+        "flags",
+        {
+          entityName: "Feature Flags",
+          changes: delta,
+          changedKeys: Object.keys(delta),
+        },
+        adminUser,
+      );
+      setSavedSnapshot(flags);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2200);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleResetDefaults = async () => {
+    if (!window.confirm("Reset all feature flags to defaults?")) return;
+    setFlags({ ...DEFAULT_FLAGS });
+  };
+
+  if (loading) {
+    return <div style={{ padding: 24, color: t.muted }}>Loading flags…</div>;
+  }
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}
+         className="ra-form-grid">
+      <Card>
+        <CT>Live Feature Flags</CT>
+        {saved && (
+          <div
+            style={{
+              background: "#dcfce7",
+              border: "1px solid #bbf7d0",
+              borderRadius: 8,
+              padding: "8px 12px",
+              fontSize: 12,
+              color: "#16a34a",
+              marginBottom: 12,
+            }}
+          >
+            ✓ Saved! Changes will reach customer and vendor apps within a few
+            seconds — no app update needed.
+          </div>
+        )}
+        <div
+          style={{
+            background: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            borderRadius: 10,
+            padding: "10px 12px",
+            marginBottom: 14,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#1d4ed8",
+              marginBottom: 4,
+            }}
+          >
+            What is this page?
+          </div>
+          <div style={{ fontSize: 11, color: "#1e3a8a", lineHeight: 1.5 }}>
+            Each switch below turns a feature on or off across the whole app.
+            Flip a switch and it takes effect for every user (customers and
+            vendors) within a few seconds — no need to update the app on
+            anyone's phone. <strong>Don't forget to press "Save Flags"</strong>{" "}
+            at the bottom of this column when you're done.
+          </div>
+        </div>
+        {FLAG_GROUPS.slice(0, Math.ceil(FLAG_GROUPS.length / 2)).map((group) => (
+          <FlagGroup key={group.title} group={group} flags={flags} setFlag={setFlag} t={t} />
+        ))}
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <Btn variant="primary" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving…" : "Save Flags"}
+          </Btn>
+          <Btn variant="ghost" onClick={handleResetDefaults}>
+            Reset to defaults
+          </Btn>
+        </div>
+      </Card>
+      <Card>
+        <CT>More flags</CT>
+        {FLAG_GROUPS.slice(Math.ceil(FLAG_GROUPS.length / 2)).map((group) => (
+          <FlagGroup key={group.title} group={group} flags={flags} setFlag={setFlag} t={t} />
+        ))}
+        {flags.appUnderMaintenance && (
+          <div
+            style={{
+              borderTop: `1px solid ${t.border}`,
+              marginTop: 12,
+              paddingTop: 12,
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 600, color: t.text1, marginBottom: 6 }}>
+              Message shown to users during maintenance
+            </div>
+            <textarea
+              value={flags.maintenanceMessage || ""}
+              onChange={(e) => setFlag("maintenanceMessage", e.target.value)}
+              placeholder="We're upgrading our service. Back in 30 minutes."
+              rows={3}
+              style={{
+                width: "100%",
+                background: t.input,
+                border: `1px solid ${t.border}`,
+                borderRadius: 7,
+                padding: "8px 10px",
+                color: t.text1,
+                fontSize: 12,
+                outline: "none",
+                resize: "vertical",
+              }}
+            />
+            <div style={{ fontSize: 10, color: t.muted, marginTop: 4 }}>
+              Write a short, friendly note. This is what every user will see on
+              the maintenance screen.
+            </div>
+          </div>
+        )}
+        <div
+          style={{
+            borderTop: `1px solid ${t.border}`,
+            marginTop: 12,
+            paddingTop: 12,
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 600, color: t.text1, marginBottom: 6 }}>
+            How many jobs can a vendor handle at once?
+          </div>
+          <input
+            value={flags.maxActiveJobsPerVendor}
+            onChange={(e) =>
+              setFlag(
+                "maxActiveJobsPerVendor",
+                Math.max(1, parseInt(e.target.value || "1", 10)),
+              )
+            }
+            type="number"
+            min={1}
+            max={10}
+            style={{
+              width: 90,
+              background: t.input,
+              border: `1px solid ${t.border}`,
+              borderRadius: 7,
+              padding: "8px 10px",
+              color: t.text1,
+              fontSize: 12,
+              outline: "none",
+            }}
+          />
+          <div style={{ fontSize: 10, color: t.muted, marginTop: 4 }}>
+            The most jobs a vendor can have accepted at the same time.
+            Recommended: 1 (so they finish one before taking another).
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function FlagGroup({ group, flags, setFlag, t }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: 700,
+          color: t.muted,
+          textTransform: "uppercase",
+          letterSpacing: 0.6,
+          marginBottom: 8,
+        }}
+      >
+        {group.title}
+      </div>
+      {group.items.map(([k, n, d]) => {
+        const on = !!flags[k];
+        return (
+          <div
+            key={k}
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              padding: "10px 0",
+              borderBottom: `1px dashed ${t.border}`,
+              gap: 10,
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 12, color: t.text1, fontWeight: 600 }}>
+                  {n}
+                </div>
+                <span
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: 0.5,
+                    color: on ? "#16a34a" : t.muted,
+                    background: on ? "#dcfce7" : "transparent",
+                    border: on ? "1px solid #bbf7d0" : `1px solid ${t.border}`,
+                    padding: "2px 6px",
+                    borderRadius: 999,
+                  }}
+                >
+                  {on ? "ON" : "OFF"}
+                </span>
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: t.muted,
+                  lineHeight: 1.5,
+                  marginTop: 4,
+                }}
+              >
+                {d}
+              </div>
+            </div>
+            <Tog checked={on} onChange={() => setFlag(k, !on)} />
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
