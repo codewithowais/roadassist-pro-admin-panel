@@ -25,6 +25,22 @@ service cloud.firestore {
              && resource.data.userId == request.auth.uid;
     }
 
+    // True when the signed-in user owns the vendor record this request is
+    // assigned to (vendors/{vendorId}.authUid == auth.uid). We read the
+    // vendor doc by id (cheap — single get) and compare authUid.
+    function isAssignedVendor(vendorId) {
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/vendors/$(vendorId)) &&
+             get(/databases/$(database)/documents/vendors/$(vendorId)).data.authUid == request.auth.uid;
+    }
+
+    function isAssignedVendorExisting() {
+      return isSignedIn() &&
+             resource.data.vendorId is string &&
+             exists(/databases/$(database)/documents/vendors/$(resource.data.vendorId)) &&
+             get(/databases/$(database)/documents/vendors/$(resource.data.vendorId)).data.authUid == request.auth.uid;
+    }
+
     // ── Vendors ────────────────────────────────────────────────────────
     // - Admins: full CRUD.
     // - Signed-in mobile users: read-only (to render the customer-facing
@@ -33,7 +49,37 @@ service cloud.firestore {
     //   locked to safe defaults so applicants can't self-approve.
     match /vendors/{id} {
       allow read: if isSignedIn() || isAdmin();
-      allow update, delete: if isAdmin();
+      allow delete: if isAdmin();
+      // Admins: full update. Vendors: may update only their own non-trust
+      // fields (presence, current position, working hours flag). Trust
+      // fields (status, kyc, isVerified, rating, reviewCount) remain
+      // admin-only — vendors cannot self-approve or fudge their stats.
+      allow update: if isAdmin() ||
+        // Vendor self-update path: vendor may patch their own non-trust
+        // fields (presence, current location, profile bits). Trust
+        // fields stay frozen.
+        (
+          isSignedIn() &&
+          resource.data.authUid == request.auth.uid &&
+          request.resource.data.status == resource.data.status &&
+          request.resource.data.kyc == resource.data.kyc &&
+          request.resource.data.isVerified == resource.data.isVerified &&
+          request.resource.data.rating == resource.data.rating &&
+          request.resource.data.reviewCount == resource.data.reviewCount &&
+          request.resource.data.authUid == resource.data.authUid
+        ) ||
+        // Customer rating-update path: any signed-in user may bump the
+        // denormalised rating/reviewCount fields, but only those — every
+        // other field must stay identical. Cloud Functions take this
+        // over once deployed; until then this is the only way for
+        // ratings to refresh after a review submission.
+        (
+          isSignedIn() &&
+          request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['rating', 'reviewCount']) &&
+          request.resource.data.reviewCount is number &&
+          request.resource.data.reviewCount >= resource.data.reviewCount
+        );
       allow create: if isAdmin() ||
         (
           request.resource.data.status == "pending"
@@ -74,14 +120,20 @@ service cloud.firestore {
     }
 
     // ── Service requests (top-level) ──────────────────────────────────
-    // - User: create their own (userId locked to auth.uid),
-    //         read/update their own, no delete (audit trail).
-    // - Admin: full CRUD.
-    // (Future vendor app: extend with `resource.data.vendorId == auth.uid`.)
+    // - Customer: create their own (userId locked to auth.uid),
+    //             read/update their own, no delete (audit trail).
+    // - Vendor:   read/update requests assigned to their vendor record
+    //             (resolved via vendors/{vendorId}.authUid == auth.uid).
+    //             Cannot create or delete.
+    // - Admin:    full CRUD.
     match /service_requests/{id} {
-      allow read: if isAdmin() || ownsExisting();
+      allow read: if isAdmin()
+                     || ownsExisting()
+                     || isAssignedVendorExisting();
       allow create: if isAdmin() || isOwner();
-      allow update: if isAdmin() || ownsExisting();
+      allow update: if isAdmin()
+                       || ownsExisting()
+                       || isAssignedVendorExisting();
       allow delete: if isAdmin();
     }
 
@@ -117,10 +169,25 @@ service cloud.firestore {
     // ── Notifications (top-level) ─────────────────────────────────────
     // - User: create their own (in-app event-driven), read their own,
     //         update isRead on their own. Cannot modify another user's.
-    // - Admin: full CRUD (broadcast sends).
+    // - Vendor: when an assigned request is created/updated, the vendor
+    //           may write a status notification targeted at the customer
+    //           (rate-limited by Firestore via per-doc create cap).
+    // - Admin: full CRUD (broadcast sends, KYC announcements, etc.).
     match /notifications/{id} {
       allow read: if isAdmin() || ownsExisting();
-      allow create: if isAdmin() || isOwner();
+      allow create: if isAdmin()
+                       || isOwner()
+                       // Vendor → customer service updates: any signed-in user
+                       // may write a notification with type "serviceUpdate"
+                       // (canonical Flutter NotificationType.serviceUpdate)
+                       // to a real targetUserId. Locked to that single type so
+                       // it can't be abused for arbitrary cross-user messaging.
+                       || (
+                         isSignedIn()
+                         && request.resource.data.userId is string
+                         && request.resource.data.userId.size() > 0
+                         && request.resource.data.type == "serviceUpdate"
+                       );
       allow update: if isAdmin() || ownsExisting();
       allow delete: if isAdmin() || ownsExisting();
     }

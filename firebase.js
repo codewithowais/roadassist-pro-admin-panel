@@ -182,6 +182,27 @@ export const approveKYC = async (id, adminUser, entityName) => {
     { entityName: entityName || null },
     adminUser,
   );
+  // Best-effort: write an in-app notification to the vendor's user doc
+  // so they see the approval the next time they open the app. Falls back
+  // silently — the audit log + vendor profile state are the source of
+  // truth, this is just a UX nicety.
+  try {
+    const vendorSnap = await getDoc(doc(db, COLS.vendors, id));
+    const authUid = vendorSnap.data()?.authUid;
+    if (authUid) {
+      await addDoc(collection(db, COLS.notifications), {
+        userId: authUid,
+        type: "systemInfo",
+        title: "You’re approved ✨",
+        body: "KYC complete — you can now accept jobs in the RoadAssist Pro app.",
+        isRead: false,
+        createdAt: serverTimestamp(),
+      });
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn("[approveKYC] notify failed:", e);
+  }
 };
 
 export const rejectKYC = async (id, reason, adminUser, entityName) => {
@@ -198,6 +219,25 @@ export const rejectKYC = async (id, reason, adminUser, entityName) => {
     { entityName: entityName || null, reason },
     adminUser,
   );
+  try {
+    const vendorSnap = await getDoc(doc(db, COLS.vendors, id));
+    const authUid = vendorSnap.data()?.authUid;
+    if (authUid) {
+      await addDoc(collection(db, COLS.notifications), {
+        userId: authUid,
+        type: "systemInfo",
+        title: "KYC needs another look",
+        body: reason
+          ? `Your application was rejected: ${reason}`
+          : "Your application was rejected. Please contact support for details.",
+        isRead: false,
+        createdAt: serverTimestamp(),
+      });
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn("[rejectKYC] notify failed:", e);
+  }
 };
 
 // ── User CRUD ─────────────────────────────────────────────────────
@@ -585,6 +625,43 @@ export const saveAppConfig = (data) =>
     { merge: true },
   );
 
+// ── Feature flags ────────────────────────────────────────────────
+// Stored at `app_config/flags`. The mobile app and admin both stream this
+// doc so a flag flip propagates without an app rebuild. Defaults live on
+// the consumer side (FeatureFlagsService in Flutter / DEFAULT_FLAGS here)
+// so the app keeps working if the doc doesn't exist yet.
+export const DEFAULT_FLAGS = {
+  vendorSelfRegistration: true,
+  vendorAppEnabled: true,
+  kycStrict: true,
+  liveLocationTracking: true,
+  simulatedTrackingFallback: false,
+  autoNotifyVendorOnRequest: true,
+  fcmPushEnabled: true,
+  smsNotifications: false,
+  whatsappNotifications: false,
+  sosEnabled: true,
+  reviewsEnabled: true,
+  paymentCollection: false,
+  aiAssistantEnabled: true,
+  autoCompleteOnArrived: true,
+  maxActiveJobsPerVendor: 1,
+  appUnderMaintenance: false,
+  maintenanceMessage: "",
+};
+
+export const getFeatureFlags = (cb) =>
+  onSnapshot(doc(db, COLS.appConfig, "flags"), (snap) =>
+    cb({ ...DEFAULT_FLAGS, ...(snap.data() || {}) }),
+  );
+
+export const saveFeatureFlags = (flags) =>
+  setDoc(
+    doc(db, COLS.appConfig, "flags"),
+    { ...flags, updatedAt: serverTimestamp() },
+    { merge: true },
+  );
+
 // ── File upload helper (Cloudflare R2 via presigned PUT) ──────────
 // Uploads `file` to R2 under `<applicationId>/<key>.<ext>`.
 // Returns the storage path (NOT a URL — use viewVendorDoc(path) to get
@@ -686,5 +763,38 @@ export const submitVendorApplication = (data) =>
     createdAt: serverTimestamp(),
     source: "self_registration",
   });
+
+// ── Admin: create a Firebase Auth account for a new user/vendor ─────
+// Wraps the admin-only `/api/users/create` endpoint. Pass role:'vendor'
+// when adding a vendor from the AddVendorModal so the mobile app's role
+// gate routes the new account to the vendor surface on first login.
+//
+// Returns { uid, email, role } on success.
+export async function adminCreateAuthAccount({
+  email,
+  password,
+  name,
+  phone,
+  role = "customer",
+}) {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error("not_signed_in");
+  const res = await fetch("/api/users/create", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ email, password, name, phone, role }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const code = j.error || `http_${res.status}`;
+    const err = new Error(code);
+    err.code = code;
+    throw err;
+  }
+  return j;
+}
 
 export { serverTimestamp, Timestamp };
