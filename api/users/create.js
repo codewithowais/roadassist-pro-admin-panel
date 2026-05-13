@@ -1,21 +1,19 @@
-// Admin-only: create a Firebase Auth user (email + password) without
-// signing the admin out. Used by AddUserModal so admins can create
-// end-user accounts that those users can then log in to via the mobile
-// app. Returns the new uid.
+// Admin-only: create a Supabase Auth user (email + password) without
+// signing the admin out. Used by AddUserModal. Returns the new uid.
 //
-// Body: { email, password, name?, phone? }
+// Body: { email, password, name?, phone?, role? }
 
-import admin from "firebase-admin";
+import { createClient } from "@supabase/supabase-js";
 import { verifyAdmin } from "../_lib/auth.js";
 import { readJsonBody, send } from "../_lib/http.js";
 import { rateLimit } from "../_lib/rate_limit.js";
 
-function initAdmin() {
-  if (admin.apps.length) return;
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!raw) throw new Error("FIREBASE_SERVICE_ACCOUNT env var missing");
-  const sa = JSON.parse(raw);
-  admin.initializeApp({ credential: admin.credential.cert(sa) });
+function getAdminClient() {
+  return createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+    { auth: { autoRefreshToken: false, persistSession: false } },
+  );
 }
 
 function normalisePhone(p) {
@@ -29,17 +27,10 @@ export default async function handler(req, res) {
   if (req.method !== "POST")
     return send(res, 405, { error: "method_not_allowed" });
 
-  const limited = rateLimit(req, {
-    key: "users-create",
-    max: 30,
-    windowMs: 60_000,
-  });
+  const limited = rateLimit(req, { key: "users-create", max: 30, windowMs: 60_000 });
   if (limited) {
     res.setHeader("Retry-After", String(limited.retryAfter));
-    return send(res, 429, {
-      error: "rate_limited",
-      retryAfter: limited.retryAfter,
-    });
+    return send(res, 429, { error: "rate_limited", retryAfter: limited.retryAfter });
   }
 
   try {
@@ -60,59 +51,36 @@ export default async function handler(req, res) {
     return send(res, 400, { error: "invalid_email" });
   if (typeof password !== "string" || password.length < 6)
     return send(res, 400, { error: "password_min_6" });
-  // Role defaults to "customer" so existing call sites keep working.
-  // Admin can pass "vendor" when creating a vendor account from the
-  // AddVendorModal so the mobile app's role gate routes them correctly.
+
   const role = bodyRole === "vendor" ? "vendor" : "customer";
 
   try {
-    initAdmin();
+    const adminClient = getAdminClient();
     const phoneNumber = normalisePhone(phone);
-    let userRecord;
-    try {
-      userRecord = await admin.auth().createUser({
-        email,
-        password,
-        displayName: name || undefined,
-        phoneNumber: phoneNumber || undefined,
-      });
-    } catch (e) {
-      if (e.code === "auth/email-already-exists")
-        return send(res, 409, { error: "email_already_exists" });
-      if (e.code === "auth/invalid-phone-number")
-        return send(res, 400, { error: "invalid_phone" });
-      if (e.code === "auth/phone-number-already-exists")
-        return send(res, 409, { error: "phone_already_exists" });
-      throw e;
-    }
-    // Mirror the user identity into the `users/{uid}` Firestore doc so
-    // the mobile app's role gate (users.role) finds a populated record on
-    // first login. Failure is non-fatal — the UI also calls addUser() to
-    // ensure this doc exists, but having the API write it removes any
-    // race window where the auth account exists without a profile.
-    try {
-      await admin
-        .firestore()
-        .doc(`users/${userRecord.uid}`)
-        .set(
-          {
-            uid: userRecord.uid,
-            email,
-            phone: phoneNumber || "",
-            name: name || "",
-            role,
-            status: "active",
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        );
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn("[users.create] users doc write failed:", e.message);
+
+    const { data, error } = await adminClient.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { name: name || "", phone: phoneNumber || "" },
+    });
+
+    if (error) {
+      if (error.message?.includes("already")) return send(res, 409, { error: "email_already_exists" });
+      return send(res, 400, { error: error.message });
     }
 
-    return send(res, 200, { uid: userRecord.uid, email, role });
+    // Mirror profile — trigger handles it on sign-in, but we guard the race window here.
+    await adminClient.from("profiles").upsert({
+      id: data.user.id,
+      email,
+      phone: phoneNumber || "",
+      name: name || "",
+      role,
+      status: "active",
+    });
+
+    return send(res, 200, { uid: data.user.id, email, role });
   } catch (e) {
     return send(res, 500, { error: "create_failed", detail: e.message });
   }
