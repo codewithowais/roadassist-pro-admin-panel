@@ -10,14 +10,9 @@ import {
   submitVendorApplication,
   uploadFile,
   auth,
-  db,
+  supabase,
   getFeatureFlags,
-} from "./firebase";
-import {
-  createUserWithEmailAndPassword,
-  signOut as fbSignOut,
-} from "firebase/auth";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+} from "./src/lib/supabase";
 import { v as V, check } from "./validators";
 
 // Stable per-form-instance id used as the R2 path prefix for this
@@ -201,44 +196,28 @@ export default function VendorRegister() {
     if (!validate()) return;
     setLoading(true);
     try {
-      // 1. Create the Firebase Auth account so the vendor can later log
+      // 1. Create the Supabase Auth account so the vendor can later log
       //    in to the mobile app once an admin approves their KYC.
+      //    The /api/vendors/self-register endpoint handles the vendor row.
       let authUid = null;
       try {
-        const cred = await createUserWithEmailAndPassword(
-          auth,
-          form.email.trim(),
-          form.password,
-        );
-        authUid = cred.user.uid;
-
-        // 1a. Mirror the vendor identity into users/{uid} so the mobile
-        //     app's role gate ('users.role == "vendor"') can route them
-        //     to the vendor dashboard. We do this BEFORE signing out so
-        //     the auth context still permits self-write per Firestore
-        //     rules. Failure is non-fatal — admin can backfill later.
-        try {
-          await setDoc(doc(db, "users", authUid), {
-            uid: authUid,
-            email: form.email.trim(),
-            phone: form.phone || "",
-            name: form.ownerName || form.businessName || "",
-            role: "vendor",
-            status: "active",
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-            lastLoginAt: serverTimestamp(),
-          });
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn("[vendor-register] users doc write failed:", e);
-        }
+        const { data: signupData, error: signupErr } = await supabase.auth.signUp({
+          email: form.email.trim(),
+          password: form.password,
+          options: {
+            data: {
+              name: form.ownerName || form.businessName || "",
+              phone: form.phone || "",
+            },
+          },
+        });
+        if (signupErr) throw signupErr;
+        authUid = signupData?.user?.id || null;
 
         // Sign out immediately so /register stays an unauthenticated page.
-        // The vendor's account exists in Firebase Auth either way.
-        await fbSignOut(auth).catch(() => {});
+        await supabase.auth.signOut().catch(() => {});
       } catch (authErr) {
-        if (authErr.code === "auth/email-already-in-use") {
+        if (authErr.message?.includes("already")) {
           setErrors((p) => ({
             ...p,
             email:
@@ -247,7 +226,7 @@ export default function VendorRegister() {
           setLoading(false);
           return;
         }
-        if (authErr.code === "auth/weak-password") {
+        if (authErr.message?.includes("Password")) {
           setErrors((p) => ({
             ...p,
             password: "Password is too weak. Use at least 6 characters.",

@@ -85,9 +85,8 @@ import {
   updateEmergencyContact,
   deleteEmergencyContact,
   lookupUserByPhone,
-} from "./firebase";
-import { onAuthStateChanged } from "firebase/auth";
-import { getDoc, doc } from "firebase/firestore";
+} from "./src/lib/supabase";
+import { supabase } from "./src/lib/supabase";
 import { v as V, check } from "./validators";
 
 // ─────────────────────────────────────────────────────────────────
@@ -4153,21 +4152,18 @@ function Requests() {
     // notification to the customer with the reason so they know why
     // their request closed without explanation.
     try {
-      const { doc, updateDoc, addDoc, collection, serverTimestamp } =
-        await import("firebase/firestore");
-      const { db, COLS } = await import("./firebase");
-      await updateDoc(doc(db, COLS.requests, r.id), {
-        cancelledBy: "admin",
-        cancelReason: reason,
-      });
+      const { supabase: sb } = await import("./src/lib/supabase");
+      await sb.from("service_requests").update({
+        cancelled_by: "admin",
+        cancel_reason: reason,
+      }).eq("id", r.id);
       if (r.userId) {
-        await addDoc(collection(db, COLS.notifications), {
-          userId: r.userId,
+        await sb.from("notifications").insert({
+          user_id: r.userId,
           type: "serviceUpdate",
           title: "Your request was cancelled",
           body: reason || "An admin cancelled your service request.",
-          isRead: false,
-          createdAt: serverTimestamp(),
+          is_read: false,
         });
       }
     } catch (e) {
@@ -4223,40 +4219,27 @@ function Requests() {
     )
       return;
     try {
-      const {
-        doc,
-        updateDoc,
-        addDoc,
-        collection,
-        serverTimestamp,
-      } = await import("firebase/firestore");
-      const { db, COLS } = await import("./firebase");
-      await updateDoc(doc(db, COLS.requests, r.id), {
-        vendorId: newVendorId,
-        vendorName: newVendor.businessName || newVendor.name || "",
-        // Reset status so the new vendor's side picks it up as a fresh
-        // incoming job instead of one that's already been accepted.
+      const { supabase: sb } = await import("./src/lib/supabase");
+      await sb.from("service_requests").update({
+        vendor_id: newVendorId,
+        vendor_name: newVendor.businessName || newVendor.name || "",
         status: "requested",
-        acceptedAt: null,
-        mechanicName: "",
-        mechanicVehicle: "",
-        mechanicLat: null,
-        mechanicLng: null,
-      });
-      // Notify the new vendor so they don't have to be staring at the
-      // app to know a job just landed in their queue.
+        accepted_at: null,
+        mechanic_name: "",
+        mechanic_vehicle: "",
+        mechanic_lat: null,
+        mechanic_lng: null,
+      }).eq("id", r.id);
       if (newVendor.authUid) {
         try {
-          await addDoc(collection(db, COLS.notifications), {
-            userId: newVendor.authUid,
+          await sb.from("notifications").insert({
+            user_id: newVendor.authUid,
             type: "systemInfo",
             title: "New job assigned to you",
             body: `Admin assigned a ${r.category || "service"} request. Open the app to accept it.`,
-            isRead: false,
-            createdAt: serverTimestamp(),
+            is_read: false,
           });
         } catch (e) {
-          // eslint-disable-next-line no-console
           console.warn("[admin] reassign notify failed:", e);
         }
       }
@@ -7272,28 +7255,28 @@ function Login({ onLogin }) {
     setErr("");
     setLoading(true);
     try {
-      const cred = await adminLogin(email, pass);
-      // Verify this user is an admin. If Firestore is unreachable
-      // (ad blocker, offline, transient outage), don't block login —
-      // the auth listener and security rules will handle it. Only a
-      // definitive permission-denied means "you are not an admin".
-      try {
-        const snap = await getDoc(doc(db, "admin_users", cred.user.uid));
-        if (!snap.exists()) {
-          await adminLogout();
-          setErr("Access denied. You are not an admin.");
-          return;
+      const { data: cred, error: loginErr } = await adminLogin(email, pass);
+      if (loginErr) throw loginErr;
+      // Verify admin via app_metadata (fast path) or profiles table fallback.
+      const meta = cred.user?.user_metadata;
+      const appMeta = cred.session?.user?.app_metadata || {};
+      if (appMeta.admin !== true) {
+        // Fallback: check profiles.role
+        try {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", cred.user.id)
+            .single();
+          const adminRoles = ["admin", "superadmin", "manager", "support", "viewer"];
+          if (!profile || !adminRoles.includes(profile.role)) {
+            await adminLogout();
+            setErr("Access denied. You are not an admin.");
+            return;
+          }
+        } catch (verifyErr) {
+          console.warn("Could not verify admin role. Proceeding; RLS will enforce.", verifyErr);
         }
-      } catch (verifyErr) {
-        if (verifyErr?.code === "permission-denied") {
-          await adminLogout();
-          setErr("Access denied. You are not an admin.");
-          return;
-        }
-        console.warn(
-          "Could not verify admin role (Firestore unreachable). Proceeding; rules will enforce.",
-          verifyErr,
-        );
       }
       onLogin(cred.user);
     } catch (e) {
@@ -7476,14 +7459,11 @@ export default function AdminPanel() {
   useEffect(() => { localStorage.setItem("ra_dark", isDark); }, [isDark]);
   useEffect(() => { localStorage.setItem("ra_primary", primaryColor); }, [primaryColor]);
 
-  // Auth listener — verify admin_users membership before exposing listeners.
-  // Without this, a stale Firebase Auth session (e.g. cached from a previous
-  // test) flips adminUser truthy briefly, attaches all 7 Firestore listeners,
-  // and floods the console with permission-denied errors before the Login
-  // screen kicks the user out.
+  // Auth listener — verify admin role before exposing data listeners.
   useEffect(() => {
     let cancelled = false;
-    const unsub = onAuthStateChanged(auth, async (user) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      const user = session?.user ?? null;
       if (!user) {
         if (!cancelled) {
           setAdminUser(null);
@@ -7492,14 +7472,25 @@ export default function AdminPanel() {
         return;
       }
       try {
-        const snap = await getDoc(doc(db, "admin_users", user.uid));
+        const appMeta = user.app_metadata || {};
+        const adminRoles = ["admin", "superadmin", "manager", "support", "viewer"];
+        let role = appMeta.role || null;
+        let disabled = appMeta.disabled === true;
+
+        if (!role) {
+          // Fallback: read from profiles table
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("role, status")
+            .eq("id", user.id)
+            .single();
+          role = profile?.role || null;
+          disabled = profile?.status === "blocked";
+        }
+
         if (cancelled) return;
-        const data = snap.data();
-        if (snap.exists() && !data?.disabled) {
-          setAdminProfile({
-            role: data?.role || "viewer",
-            name: data?.name || null,
-          });
+        if (role && adminRoles.includes(role) && !disabled) {
+          setAdminProfile({ role, name: user.user_metadata?.name || user.email || null });
           setAdminUser(user);
         } else {
           setAdminProfile(null);
@@ -7508,26 +7499,15 @@ export default function AdminPanel() {
         }
       } catch (err) {
         if (cancelled) return;
-        // Only fail-closed on a definitive "you are not an admin" rule denial.
-        // Network errors (ad blockers blocking firestore.googleapis.com,
-        // offline, transient outages) must keep the user signed in — Firestore
-        // rules are the real security boundary. Failing-closed here would
-        // lock out legit admins on flaky networks.
-        if (err && err.code === "permission-denied") {
-          setAdminProfile(null);
-          await adminLogout().catch(() => {});
-          setAdminUser(null);
-        } else {
-          console.warn("admin_users check failed (non-fatal):", err);
-          setAdminUser(user);
-        }
+        console.warn("admin role check failed (non-fatal):", err);
+        setAdminUser(user);
       } finally {
         if (!cancelled) setAuthLoading(false);
       }
     });
     return () => {
       cancelled = true;
-      unsub();
+      subscription.unsubscribe();
     };
   }, []);
 
