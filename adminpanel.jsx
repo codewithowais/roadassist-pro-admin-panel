@@ -2198,7 +2198,7 @@ function Dashboard() {
         <KCard
           label="Total Users"
           value={users.length || "—"}
-          delta="Live from Firestore"
+          delta="Live from Supabase"
           accent={t.orange}
         />
         <KCard
@@ -5975,7 +5975,7 @@ function Settings_Page() {
                   marginBottom: 12,
                 }}
               >
-                ✓ Configuration saved to Firestore!
+                ✓ Configuration saved to Supabase!
               </div>
             )}
             <FG
@@ -6096,7 +6096,7 @@ function Settings_Page() {
               ))}
             </div>
             <Btn variant="primary" onClick={handleSave} disabled={saving}>
-              {saving ? "Saving…" : "Save to Firestore"}
+              {saving ? "Saving…" : "Save to Supabase"}
             </Btn>
           </Card>
           <Card>
@@ -7549,7 +7549,7 @@ export default function AdminPanel() {
     pendingKyc: vendors.filter((v) => !v.deletedAt && v.kyc === "pending").length,
     activeSos: sos.filter((s) => !s.resolved).length,
     flaggedReviews: reviews.filter((r) => r.status === "flagged").length,
-    unreadNotifs: notifications.filter((n) => !n.read).length,
+    unreadNotifs: notifications.filter((n) => !n.isRead).length,
   };
 
   const adminCtx = {

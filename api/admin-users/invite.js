@@ -74,7 +74,7 @@ export default async function handler(req, res) {
       id: data.user.id,
       email,
       name: name || null,
-      role: "admin",
+      role,        // use actual sub-role (manager/support/viewer) not hardcoded "admin"
       status: "active",
     });
 

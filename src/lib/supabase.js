@@ -53,22 +53,25 @@ export const adminLogin = (email, pass) =>
 
 export const adminLogout = () => supabase.auth.signOut();
 
-// Compatibility shim — callers that do auth.currentUser?.getIdToken() now call this.
+// Compatibility shim — use getAuthToken() for new code. This shim reads the
+// cached session synchronously from the supabase-js in-memory store.
 export const auth = {
   get currentUser() {
-    // synchronous best-effort for call sites that don't await
-    const session = supabase.auth.session?.();
-    return session
-      ? {
-          uid: session.user?.id,
-          email: session.user?.email,
-          getIdToken: async (forceRefresh = false) => {
-            if (forceRefresh) await supabase.auth.refreshSession();
-            const { data } = await supabase.auth.getSession();
-            return data?.session?.access_token ?? null;
-          },
-        }
+    const user = supabase.auth.getUser
+      ? null  // getUser is async; fall through to async path
       : null;
+    // Use the internal cached session (supabase-js v2 stores it in memory)
+    const cachedUser = supabase.auth.currentUser ?? supabase.auth._currentUser ?? null;
+    if (!cachedUser) return null;
+    return {
+      uid: cachedUser.id,
+      email: cachedUser.email,
+      getIdToken: async (forceRefresh = false) => {
+        if (forceRefresh) await supabase.auth.refreshSession();
+        const { data } = await supabase.auth.getSession();
+        return data?.session?.access_token ?? null;
+      },
+    };
   },
 };
 
