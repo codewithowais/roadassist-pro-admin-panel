@@ -918,6 +918,92 @@ export async function adminCreateAuthAccount({ email, password, name, phone, rol
   return j;
 }
 
+// ── Admin session management ──────────────────────────────────────────────────
+function detectDevice() {
+  const ua = navigator.userAgent;
+  let browser = "Unknown";
+  if (ua.includes("Edg/")) browser = "Edge";
+  else if (ua.includes("Chrome")) browser = "Chrome";
+  else if (ua.includes("Firefox")) browser = "Firefox";
+  else if (ua.includes("Safari")) browser = "Safari";
+  else if (ua.includes("Opera")) browser = "Opera";
+
+  let os = "Unknown";
+  if (ua.includes("Windows NT")) os = "Windows";
+  else if (ua.includes("Mac OS X")) os = "macOS";
+  else if (ua.includes("Android")) os = "Android";
+  else if (/iPhone|iPad/.test(ua)) os = "iOS";
+  else if (ua.includes("Linux")) os = "Linux";
+
+  const w = window.screen?.width ?? 1920;
+  const deviceName = w < 768 ? `Mobile · ${os}` : w < 1280 ? `Tablet · ${os}` : `Desktop · ${os}`;
+  return { browser, device_os: os, device_name: deviceName };
+}
+
+export async function createAdminSession(userId) {
+  const info = detectDevice();
+  const { data, error } = await supabase
+    .from("admin_sessions")
+    .insert({
+      user_id: userId,
+      device_name: info.device_name,
+      device_os: info.device_os,
+      browser: info.browser,
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data.id;
+}
+
+export async function verifyAdminSession(sessionId, userId) {
+  const { data } = await supabase
+    .from("admin_sessions")
+    .select("id")
+    .eq("id", sessionId)
+    .eq("user_id", userId)
+    .is("revoked_at", null)
+    .gt("expires_at", new Date().toISOString())
+    .maybeSingle();
+  return !!data;
+}
+
+export async function touchAdminSession(sessionId) {
+  await supabase
+    .from("admin_sessions")
+    .update({ last_active_at: new Date().toISOString() })
+    .eq("id", sessionId);
+}
+
+export async function getAdminSessions(userId) {
+  const { data, error } = await supabase
+    .from("admin_sessions")
+    .select("id, device_name, device_os, browser, created_at, last_active_at, expires_at")
+    .eq("user_id", userId)
+    .is("revoked_at", null)
+    .gt("expires_at", new Date().toISOString())
+    .order("last_active_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function revokeAdminSession(sessionId) {
+  await supabase
+    .from("admin_sessions")
+    .update({ revoked_at: new Date().toISOString() })
+    .eq("id", sessionId);
+}
+
+export async function revokeOtherAdminSessions(userId, currentSessionId) {
+  await supabase
+    .from("admin_sessions")
+    .update({ revoked_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .neq("id", currentSessionId)
+    .is("revoked_at", null);
+}
+
 // ── Compatibility shims ───────────────────────────────────────────────────────
 // serverTimestamp is used by older call sites that haven't been updated.
 // Return an ISO string — close enough for display purposes.

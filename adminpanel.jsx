@@ -11,6 +11,8 @@
 //    export default function App() { return <AdminPanel /> }
 // ─────────────────────────────────────────────────────────────────
 import { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { useAuthContext } from "./src/auth/useAuth.jsx";
 import {
   LineChart,
   Line,
@@ -85,6 +87,12 @@ import {
   updateEmergencyContact,
   deleteEmergencyContact,
   lookupUserByPhone,
+  createAdminSession,
+  verifyAdminSession,
+  touchAdminSession,
+  getAdminSessions,
+  revokeAdminSession,
+  revokeOtherAdminSessions,
 } from "./src/lib/supabase";
 import { supabase } from "./src/lib/supabase";
 import { v as V, check } from "./validators";
@@ -7348,7 +7356,9 @@ const NAV = [
 // ─────────────────────────────────────────────────────────────────
 //  LOGIN SCREEN
 // ─────────────────────────────────────────────────────────────────
-function Login({ onLogin }) {
+// Exported so AppRouter can render it directly on /login.
+// Auth state is managed by AuthProvider — no onLogin callback needed.
+export function Login() {
   const t = useTheme();
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -7360,33 +7370,15 @@ function Login({ onLogin }) {
     setErr("");
     setLoading(true);
     try {
-      const { data: cred, error: loginErr } = await adminLogin(email, pass);
+      const { error: loginErr } = await adminLogin(email, pass);
       if (loginErr) throw loginErr;
-      // Verify admin via app_metadata (fast path) or profiles table fallback.
-      const meta = cred.user?.user_metadata;
-      const appMeta = cred.session?.user?.app_metadata || {};
-      if (appMeta.admin !== true) {
-        // Fallback: check profiles.role
-        try {
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("role")
-            .eq("id", cred.user.id)
-            .single();
-          const adminRoles = ["admin", "superadmin", "manager", "support", "viewer"];
-          if (!profile || !adminRoles.includes(profile.role)) {
-            await adminLogout();
-            setErr("Access denied. You are not an admin.");
-            return;
-          }
-        } catch (verifyErr) {
-          console.warn("Could not verify admin role. Proceeding; RLS will enforce.", verifyErr);
-        }
-      }
-      onLogin(cred.user);
+      // AuthProvider's onAuthStateChange(SIGNED_IN) handles role check and
+      // sets the user — no need to call anything here. The router's GuestGuard
+      // will redirect to /dashboard once the user is set.
     } catch (e) {
       setErr(
-        e.code === "auth/wrong-password" ||
+        e.message?.includes("Invalid login credentials") ||
+          e.code === "auth/wrong-password" ||
           e.code === "auth/user-not-found" ||
           e.code === "auth/invalid-credential"
           ? "Invalid email or password."
@@ -7541,16 +7533,19 @@ export default function AdminPanel() {
   const [primaryColor, setPrimaryColor] = useState(
     () => localStorage.getItem("ra_primary") || "#F97316",
   );
-  const [page, setPage] = useState("dashboard");
-  const [adminUser, setAdminUser] = useState(null);
-  const [adminProfile, setAdminProfile] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
   const [notifOpen, setNotifOpen] = useState(false);
-  const [sessionWarning, setSessionWarning] = useState(false);
-  const [sessionCountdown, setSessionCountdown] = useState(120);
-  const inactivityTimer = useRef(null);
-  const warningTimer = useRef(null);
-  const countdownInterval = useRef(null);
+
+  // Auth comes from AuthProvider — no local auth state needed.
+  const { user: adminUser, profile: adminProfile, logout } = useAuthContext();
+
+  // URL-based page routing — keeps the address bar in sync with the panel view.
+  const { page: urlPage } = useParams();
+  const navigate = useNavigate();
+  const allNavItems = NAV.flatMap((s) => s.items);
+  const validPages = new Set(allNavItems.map((i) => i.key));
+  const activePage = validPages.has(urlPage) ? urlPage : "dashboard";
+
+  const setPage = (key) => navigate(`/${key}`, { replace: true });
 
   // Firebase data
   const [vendors, setVendors] = useState([]);
@@ -7569,97 +7564,7 @@ export default function AdminPanel() {
   useEffect(() => { localStorage.setItem("ra_dark", isDark); }, [isDark]);
   useEffect(() => { localStorage.setItem("ra_primary", primaryColor); }, [primaryColor]);
 
-  // Auth listener — verify admin role before exposing data listeners.
-  useEffect(() => {
-    let cancelled = false;
-    let authResolved = false;
-    const ROLE_CACHE_KEY = "ra_admin_role";
-    // Safety timeout covers the ENTIRE auth flow including the profile DB fetch.
-    const safetyTimer = setTimeout(() => {
-      if (!cancelled && !authResolved) {
-        console.warn("[auth] Auth flow did not resolve within 8s — showing login");
-        setAuthLoading(false);
-      }
-    }, 8000);
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      const user = session?.user ?? null;
-      if (!user) {
-        if (!cancelled) {
-          authResolved = true;
-          clearTimeout(safetyTimer);
-          localStorage.removeItem(ROLE_CACHE_KEY);
-          setAdminUser(null);
-          setAuthLoading(false);
-        }
-        return;
-      }
-      try {
-        const appMeta = user.app_metadata || {};
-        const adminRoles = ["admin", "superadmin", "manager", "support", "viewer"];
-        let role = appMeta.role || null;
-        let disabled = appMeta.disabled === true;
-
-        if (!role) {
-          const cachedRole = localStorage.getItem(ROLE_CACHE_KEY);
-          try {
-            // Fetch with 6s timeout to prevent indefinite hang on slow connections.
-            const { data: profile } = await Promise.race([
-              supabase.from("profiles").select("role, status").eq("id", user.id).single(),
-              new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("profile fetch timeout")), 6000)
-              ),
-            ]);
-            role = profile?.role || null;
-            disabled = profile?.status === "blocked";
-            // Cache role so future refreshes survive a slow/unreachable DB.
-            if (role) localStorage.setItem(ROLE_CACHE_KEY, role);
-            else localStorage.removeItem(ROLE_CACHE_KEY);
-          } catch (fetchErr) {
-            // Network or timeout error — use cached role rather than destroying
-            // a valid session. Calling adminLogout() on a timeout was the root
-            // cause of the refresh-forces-logout bug.
-            if (cachedRole) {
-              console.warn("[auth] Profile fetch failed, using cached role:", cachedRole);
-              role = cachedRole;
-            } else {
-              throw fetchErr;
-            }
-          }
-        }
-
-        if (cancelled) return;
-        if (role && adminRoles.includes(role) && !disabled) {
-          setAdminProfile({ role, name: user.user_metadata?.name || user.email || null });
-          setAdminUser(user);
-        } else {
-          // Genuine access denial (role missing or blocked) — sign out.
-          setAdminProfile(null);
-          localStorage.removeItem(ROLE_CACHE_KEY);
-          await adminLogout();
-          setAdminUser(null);
-        }
-      } catch (err) {
-        if (cancelled) return;
-        console.warn("admin role check failed:", err);
-        // Do NOT call adminLogout() here — a network/timeout failure must not
-        // destroy the valid Supabase session. Just hide the panel.
-        setAdminUser(null);
-      } finally {
-        if (!cancelled) {
-          authResolved = true;
-          clearTimeout(safetyTimer);
-          setAuthLoading(false);
-        }
-      }
-    });
-    return () => {
-      cancelled = true;
-      clearTimeout(safetyTimer);
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  // Supabase listeners — only when logged in
+  // Supabase real-time listeners — only subscribe when logged in.
   useEffect(() => {
     if (!adminUser) return;
     const u1 = getVendors(setVendors);
@@ -7669,15 +7574,7 @@ export default function AdminPanel() {
     const u5 = getReviews(setReviews);
     const u6 = getNotifications(setNotifs);
     const u7 = getAuditLog(setAudit);
-    return () => {
-      u1();
-      u2();
-      u3();
-      u4();
-      u5();
-      u6();
-      u7();
-    };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); };
   }, [adminUser]);
 
   // FCM foreground messages
@@ -7688,58 +7585,7 @@ export default function AdminPanel() {
     });
   }, []);
 
-  // Inactivity auto-logout: warn at 28 min, logout at 30 min.
-  useEffect(() => {
-    if (!adminUser) return;
-    const TIMEOUT_MS = 30 * 60 * 1000;
-    const WARNING_MS = 28 * 60 * 1000;
-
-    const clearAll = () => {
-      clearTimeout(inactivityTimer.current);
-      clearTimeout(warningTimer.current);
-      clearInterval(countdownInterval.current);
-    };
-
-    const doLogout = async () => {
-      clearAll();
-      setSessionWarning(false);
-      localStorage.removeItem("ra_admin_role");
-      await adminLogout();
-      setAdminUser(null);
-    };
-
-    const startTimers = () => {
-      clearAll();
-      setSessionWarning(false);
-      warningTimer.current = setTimeout(() => {
-        setSessionCountdown(120);
-        setSessionWarning(true);
-        countdownInterval.current = setInterval(() => {
-          setSessionCountdown((s) => {
-            if (s <= 1) { clearInterval(countdownInterval.current); doLogout(); return 0; }
-            return s - 1;
-          });
-        }, 1000);
-      }, WARNING_MS);
-      inactivityTimer.current = setTimeout(doLogout, TIMEOUT_MS);
-    };
-
-    const onActivity = () => {
-      if (sessionWarning) return; // user must explicitly click "Stay logged in"
-      startTimers();
-    };
-
-    startTimers();
-    const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
-    events.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
-    return () => {
-      clearAll();
-      events.forEach((e) => window.removeEventListener(e, onActivity));
-    };
-  }, [adminUser, sessionWarning]);
-
-  const allItems = NAV.flatMap((s) => s.items);
-  const current = allItems.find((i) => i.key === page);
+  const current = allNavItems.find((i) => i.key === activePage);
   const PageComp = current?.comp || Dashboard;
 
   // Badge counts
@@ -7762,29 +7608,6 @@ export default function AdminPanel() {
     adminProfile,
     adminRole: adminProfile?.role || null,
   };
-
-  if (authLoading)
-    return (
-      <ThemeCtx.Provider value={t}>
-        <div
-          style={{
-            minHeight: "100vh",
-            background: t.bg,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Spinner />
-        </div>
-      </ThemeCtx.Provider>
-    );
-  if (!adminUser)
-    return (
-      <ThemeCtx.Provider value={t}>
-        <Login onLogin={setAdminUser} />
-      </ThemeCtx.Provider>
-    );
 
   return (
     <ThemeCtx.Provider value={t}>
@@ -7908,7 +7731,7 @@ export default function AdminPanel() {
                   {section.section}
                 </div>
                 {section.items.map((item) => {
-                  const active = page === item.key;
+                  const active = activePage === item.key;
                   const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
                   return (
                     <div
@@ -8006,7 +7829,7 @@ export default function AdminPanel() {
                   </div>
                 </div>
                 <button
-                  onClick={() => adminLogout()}
+                  onClick={logout}
                   title="Sign out"
                   style={{
                     background: "transparent",
@@ -8246,62 +8069,6 @@ export default function AdminPanel() {
         </div>
         <style>{`*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:${t.scrollThumb};border-radius:3px}@keyframes spin{to{transform:rotate(360deg)}}`}</style>
       </AdminCtx.Provider>
-
-      {/* Inactivity warning modal */}
-      {sessionWarning && (
-        <div style={{
-          position: "fixed", inset: 0, background: "#0008",
-          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
-        }}>
-          <div style={{
-            background: t.card, borderRadius: 16, padding: "32px 28px",
-            maxWidth: 360, width: "90%", textAlign: "center",
-            boxShadow: "0 20px 60px #0005", border: `1px solid ${t.border}`,
-          }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>⏱</div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: t.white, marginBottom: 8 }}>
-              Session Expiring Soon
-            </div>
-            <div style={{ fontSize: 13, color: t.muted, marginBottom: 20 }}>
-              You've been inactive. You'll be logged out in
-            </div>
-            <div style={{
-              fontSize: 42, fontWeight: 800, color: t.orange,
-              marginBottom: 20, letterSpacing: -1,
-            }}>
-              {Math.floor(sessionCountdown / 60)}:{String(sessionCountdown % 60).padStart(2, "0")}
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button
-                onClick={async () => {
-                  clearInterval(countdownInterval.current);
-                  setSessionWarning(false);
-                  localStorage.removeItem("ra_admin_role");
-                  await adminLogout();
-                  setAdminUser(null);
-                }}
-                style={{
-                  flex: 1, padding: "10px 0", borderRadius: 8, border: "none",
-                  background: "#dc26261a", color: "#ef4444",
-                  fontWeight: 600, fontSize: 13, cursor: "pointer",
-                }}
-              >
-                Logout now
-              </button>
-              <button
-                onClick={() => setSessionWarning(false)}
-                style={{
-                  flex: 2, padding: "10px 0", borderRadius: 8, border: "none",
-                  background: t.orange, color: "#fff",
-                  fontWeight: 700, fontSize: 13, cursor: "pointer",
-                }}
-              >
-                Stay logged in
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </ThemeCtx.Provider>
   );
 }
