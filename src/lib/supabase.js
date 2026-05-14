@@ -53,25 +53,15 @@ export const adminLogin = (email, pass) =>
 
 export const adminLogout = () => supabase.auth.signOut();
 
-// Compatibility shim — use getAuthToken() for new code. This shim reads the
-// cached session synchronously from the supabase-js in-memory store.
+// Compatibility shim — use getAuthToken() for all new code.
+// supabase-js v2 removed the synchronous session() method.
+// We return a minimal object from the cached JWT claims if available.
 export const auth = {
   get currentUser() {
-    const user = supabase.auth.getUser
-      ? null  // getUser is async; fall through to async path
-      : null;
-    // Use the internal cached session (supabase-js v2 stores it in memory)
-    const cachedUser = supabase.auth.currentUser ?? supabase.auth._currentUser ?? null;
-    if (!cachedUser) return null;
-    return {
-      uid: cachedUser.id,
-      email: cachedUser.email,
-      getIdToken: async (forceRefresh = false) => {
-        if (forceRefresh) await supabase.auth.refreshSession();
-        const { data } = await supabase.auth.getSession();
-        return data?.session?.access_token ?? null;
-      },
-    };
+    // v2 does not expose a synchronous currentUser; all callers should use getAuthToken()
+    // This shim is kept for legacy call sites but returns null in most contexts.
+    // Safe: all critical paths (Add User, Invite) now use getAuthToken() directly.
+    return null;
   },
 };
 
@@ -171,6 +161,8 @@ export const addVendor = (data) =>
     description: data.description || null,
     operating_hours: data.operatingHours || data.operating_hours || null,
     application_id: data.applicationId || data.application_id || null,
+    seed_id: data.seedId || data.seed_id || null,
+    auth_uid: data.authUid || data.auth_uid || null,   // links vendor to their Supabase Auth account
     source: data.source || "seed",
     agreed_to_terms: data.agreedToTerms ?? data.agreed_to_terms ?? null,
     cnic_number: data.cnicNumber || data.cnic_number || null,
@@ -398,13 +390,10 @@ export const deleteEmergencyContact = (uid, contactId) =>
 
 // ── Service requests ──────────────────────────────────────────────────────────
 export const getRequests = (cb) =>
-  liveQuery({ table: COLS.requests, order: { col: "created_at" }, limit: 50, cb });
+  liveQuery({ table: COLS.requests, order: { col: "requested_at" }, limit: 50, cb });
 
 export const updateRequestStatus = (id, status) =>
-  supabase.from(COLS.requests).update({
-    status,
-    updated_at: new Date().toISOString(),
-  }).eq("id", id);
+  supabase.from(COLS.requests).update({ status }).eq("id", id);
 
 // ── SOS ───────────────────────────────────────────────────────────────────────
 export const getSOS = (cb) =>
@@ -522,9 +511,10 @@ export const sendNotificationToAudience = async ({ title, body, audience = "user
     is_read: false,
   });
 
-  // Fetch FCM tokens from profiles filtered by role
-  let q = supabase.from(COLS.users).select("fcm_token");
+  // Fetch FCM tokens filtered by role — vendors get vendor broadcasts, customers get customer broadcasts
+  let q = supabase.from(COLS.users).select("fcm_token").eq("status", "active");
   if (audience === "vendors") q = q.eq("role", "vendor");
+  else q = q.eq("role", "customer"); // "users" audience = customers only, not vendors/admins
   const { data: users } = await q;
   const tokenSet = new Set();
   (users || []).forEach((u) => {

@@ -89,6 +89,15 @@ import {
 import { supabase } from "./src/lib/supabase";
 import { v as V, check } from "./validators";
 
+// ── Date helper: works with ISO strings (Supabase) and legacy Firestore Timestamps ──
+function toDate(v) {
+  if (!v) return null;
+  if (typeof v === "string" || typeof v === "number") return new Date(v);
+  if (v?.toDate) return v.toDate(); // legacy Firestore Timestamp
+  if (v instanceof Date) return v;
+  return null;
+}
+
 // ─────────────────────────────────────────────────────────────────
 //  THEME
 // ─────────────────────────────────────────────────────────────────
@@ -1523,7 +1532,7 @@ function NotificationPanel({ open, onClose }) {
                   </div>
                   <div style={{ fontSize: 10, color: t.muted }}>
                     By {n.sentBy} ·{" "}
-                    {n.sentAt?.toDate?.()?.toLocaleString() || "Just now"}
+                    {toDate(n.sentAt)?.toLocaleString() || "Just now"}
                   </div>
                 </div>
               ))}
@@ -2179,9 +2188,8 @@ function Dashboard() {
     ["accepted", "onTheWay", "arrived", "in_progress"].includes(r.status),
   ).length;
   const sosToday = sos.filter((s) => {
-    if (!s.createdAt?.toDate) return false;
-    const d = s.createdAt.toDate();
-    return new Date() - d < 86400000;
+    const d = toDate(s.createdAt);
+    return d && new Date() - d < 86400000;
   }).length;
 
   return (
@@ -2352,7 +2360,7 @@ function Dashboard() {
                     <Badge status={r.status} />
                   </TD>
                   <TD style={{ fontSize: 10, color: t.muted }}>
-                    {r.createdAt?.toDate?.()?.toLocaleTimeString() || "—"}
+                    {r.createdAt ? toDate(s.createdAt) : null?.toLocaleTimeString() || "—"}
                   </TD>
                 </tr>
               ))}
@@ -2534,7 +2542,7 @@ function AddUserModal({ onClose, existing }) {
       } else {
         // 1. Create the Firebase Auth user via the admin-only Vercel route
         //    so the user can later sign in to the mobile app.
-        const idToken = await adminUser?.getIdToken?.();
+        const idToken = await getAuthToken(true);
         const res = await fetch("/api/users/create", {
           method: "POST",
           headers: {
@@ -4331,7 +4339,7 @@ function Requests() {
                     <Badge status={r.status} />
                   </TD>
                   <TD style={{ fontSize: 10, color: t.muted }}>
-                    {r.createdAt?.toDate?.()?.toLocaleTimeString() || "—"}
+                    {r.createdAt ? toDate(s.createdAt) : null?.toLocaleTimeString() || "—"}
                   </TD>
                   <TD>
                     <Btn style={{ padding: "3px 7px", fontSize: 10 }}>
@@ -4635,8 +4643,8 @@ function SOS_Page() {
   // complete timeline. The top "live" panel still shows active for
   // quick triage.
   const sortedAll = [...sos].sort((a, b) => {
-    const ta = a.createdAt?.toDate?.()?.getTime?.() || 0;
-    const tb = b.createdAt?.toDate?.()?.getTime?.() || 0;
+    const ta = a.createdAt ? toDate(s.createdAt) : null?.getTime?.() || 0;
+    const tb = b.createdAt ? toDate(s.createdAt) : null?.getTime?.() || 0;
     return tb - ta;
   });
   const historyFiltered = sortedAll
@@ -4764,7 +4772,7 @@ function SOS_Page() {
                       <RecipientList items={s.recipients} />
                     )}
                     <div style={{ fontSize: 10, color: t.muted, marginTop: 4 }}>
-                      {s.createdAt?.toDate?.()?.toLocaleString() || "—"}
+                      {s.createdAt ? toDate(s.createdAt) : null?.toLocaleString() || "—"}
                     </div>
                   </div>
                   <div
@@ -4863,8 +4871,8 @@ function SOS_Page() {
               s.lat && s.lng
                 ? `https://maps.google.com/?q=${s.lat},${s.lng}`
                 : null;
-            const ts = s.createdAt?.toDate?.();
-            const resolvedTs = s.resolvedAt?.toDate?.();
+            const ts = s.createdAt ? toDate(s.createdAt) : null;
+            const resolvedTs = toDate(s.resolvedAt);
             const isActive = !s.resolved;
             return (
               <div
@@ -5219,7 +5227,7 @@ function Reviews_Page() {
                   {r.text || "—"}
                 </TD>
                 <TD style={{ fontSize: 10, color: t.muted }}>
-                  {r.createdAt?.toDate?.()?.toLocaleDateString() ||
+                  {r.createdAt ? toDate(s.createdAt) : null?.toLocaleDateString() ||
                     r.date ||
                     "—"}
                 </TD>
@@ -5636,8 +5644,8 @@ function Notifications_Page() {
                 >
                   <span>To: {n.topic || "all"}</span>
                   {n.sentBy && <span>· {n.sentBy}</span>}
-                  {n.sentAt?.toDate && (
-                    <span>· {n.sentAt.toDate().toLocaleString()}</span>
+                  {toDate(n.sentAt) && (
+                    <span>· {toDate(n.sentAt).toLocaleString()}</span>
                   )}
                 </div>
               </div>
@@ -5749,7 +5757,7 @@ function AuditLog_Page() {
             const name =
               a.entityName || a.details?.entityName || a.entityId || "—";
             const reason = a.details?.reason;
-            const ts = a.timestamp?.toDate?.();
+            const ts = toDate(a.timestamp);
             const rowId = a.id || `${i}`;
             const isOpen = !!expanded[rowId];
             const detailKeys = a.details
@@ -7039,7 +7047,7 @@ function AdminUserModal({ onClose, existing }) {
           adminUser,
         );
       } else {
-        const idToken = await adminUser?.getIdToken?.();
+        const idToken = await getAuthToken(true);
         const res = await fetch("/api/admin-users/invite", {
           method: "POST",
           headers: {
@@ -7499,8 +7507,9 @@ export default function AdminPanel() {
         }
       } catch (err) {
         if (cancelled) return;
-        console.warn("admin role check failed (non-fatal):", err);
-        setAdminUser(user);
+        console.warn("admin role check failed — signing out:", err);
+        await adminLogout();
+        setAdminUser(null);
       } finally {
         if (!cancelled) setAuthLoading(false);
       }
