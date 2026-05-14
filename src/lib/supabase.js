@@ -1,7 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  supabase.js  —  RoadAssist Pro Admin Panel
-//  Replaces firebase.js. Exports the same function surface so call sites
-//  need no changes. Firestore onSnapshot → Supabase Realtime + one-shot fetch.
+//  Single data + auth layer. Supabase handles everything except FCM push.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createClient } from "@supabase/supabase-js";
 
@@ -17,8 +16,7 @@ export const supabase = createClient(
   },
 );
 
-// ── Table name map (mirrors COLS from firebase.js) ────────────────────────────
-// Exported so existing call sites that use COLS.xxx still work.
+// ── Table name map ────────────────────────────────────────────────────────────
 export const COLS = {
   users: "profiles",
   vendors: "vendors",
@@ -877,8 +875,7 @@ export async function deleteVendorDoc(path) {
   }
 }
 
-// ── Firebase Messaging stubs (admin panel no longer needs them) ───────────────
-// The admin panel sends pushes but doesn't receive them. These are no-ops.
+// ── FCM foreground listener (stub — admin panel sends but doesn't receive) ────
 export const onFCMMessage = () => () => {};
 export const requestFCMToken = async () => null;
 export const messaging = null;
