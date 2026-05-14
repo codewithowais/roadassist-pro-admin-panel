@@ -7546,6 +7546,11 @@ export default function AdminPanel() {
   const [adminProfile, setAdminProfile] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [sessionWarning, setSessionWarning] = useState(false);
+  const [sessionCountdown, setSessionCountdown] = useState(120);
+  const inactivityTimer = useRef(null);
+  const warningTimer = useRef(null);
+  const countdownInterval = useRef(null);
 
   // Firebase data
   const [vendors, setVendors] = useState([]);
@@ -7568,9 +7573,8 @@ export default function AdminPanel() {
   useEffect(() => {
     let cancelled = false;
     let authResolved = false;
+    const ROLE_CACHE_KEY = "ra_admin_role";
     // Safety timeout covers the ENTIRE auth flow including the profile DB fetch.
-    // Do NOT clear it when onAuthStateChange fires — only clear it when the full
-    // async chain completes. Clears prematurely = infinite spinner on slow networks.
     const safetyTimer = setTimeout(() => {
       if (!cancelled && !authResolved) {
         console.warn("[auth] Auth flow did not resolve within 8s — showing login");
@@ -7583,6 +7587,7 @@ export default function AdminPanel() {
         if (!cancelled) {
           authResolved = true;
           clearTimeout(safetyTimer);
+          localStorage.removeItem(ROLE_CACHE_KEY);
           setAdminUser(null);
           setAuthLoading(false);
         }
@@ -7595,16 +7600,31 @@ export default function AdminPanel() {
         let disabled = appMeta.disabled === true;
 
         if (!role) {
-          // Fallback: read from profiles table with a 6s timeout so a slow/hung
-          // Supabase connection doesn't keep the spinner alive indefinitely.
-          const { data: profile } = await Promise.race([
-            supabase.from("profiles").select("role, status").eq("id", user.id).single(),
-            new Promise((_, reject) =>
-              setTimeout(() => reject(new Error("profile fetch timeout")), 6000)
-            ),
-          ]);
-          role = profile?.role || null;
-          disabled = profile?.status === "blocked";
+          const cachedRole = localStorage.getItem(ROLE_CACHE_KEY);
+          try {
+            // Fetch with 6s timeout to prevent indefinite hang on slow connections.
+            const { data: profile } = await Promise.race([
+              supabase.from("profiles").select("role, status").eq("id", user.id).single(),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("profile fetch timeout")), 6000)
+              ),
+            ]);
+            role = profile?.role || null;
+            disabled = profile?.status === "blocked";
+            // Cache role so future refreshes survive a slow/unreachable DB.
+            if (role) localStorage.setItem(ROLE_CACHE_KEY, role);
+            else localStorage.removeItem(ROLE_CACHE_KEY);
+          } catch (fetchErr) {
+            // Network or timeout error — use cached role rather than destroying
+            // a valid session. Calling adminLogout() on a timeout was the root
+            // cause of the refresh-forces-logout bug.
+            if (cachedRole) {
+              console.warn("[auth] Profile fetch failed, using cached role:", cachedRole);
+              role = cachedRole;
+            } else {
+              throw fetchErr;
+            }
+          }
         }
 
         if (cancelled) return;
@@ -7612,14 +7632,17 @@ export default function AdminPanel() {
           setAdminProfile({ role, name: user.user_metadata?.name || user.email || null });
           setAdminUser(user);
         } else {
+          // Genuine access denial (role missing or blocked) — sign out.
           setAdminProfile(null);
+          localStorage.removeItem(ROLE_CACHE_KEY);
           await adminLogout();
           setAdminUser(null);
         }
       } catch (err) {
         if (cancelled) return;
-        console.warn("admin role check failed — signing out:", err);
-        await adminLogout();
+        console.warn("admin role check failed:", err);
+        // Do NOT call adminLogout() here — a network/timeout failure must not
+        // destroy the valid Supabase session. Just hide the panel.
         setAdminUser(null);
       } finally {
         if (!cancelled) {
@@ -7664,6 +7687,56 @@ export default function AdminPanel() {
       setTimeout(() => setFcmToast(null), 4000);
     });
   }, []);
+
+  // Inactivity auto-logout: warn at 28 min, logout at 30 min.
+  useEffect(() => {
+    if (!adminUser) return;
+    const TIMEOUT_MS = 30 * 60 * 1000;
+    const WARNING_MS = 28 * 60 * 1000;
+
+    const clearAll = () => {
+      clearTimeout(inactivityTimer.current);
+      clearTimeout(warningTimer.current);
+      clearInterval(countdownInterval.current);
+    };
+
+    const doLogout = async () => {
+      clearAll();
+      setSessionWarning(false);
+      localStorage.removeItem("ra_admin_role");
+      await adminLogout();
+      setAdminUser(null);
+    };
+
+    const startTimers = () => {
+      clearAll();
+      setSessionWarning(false);
+      warningTimer.current = setTimeout(() => {
+        setSessionCountdown(120);
+        setSessionWarning(true);
+        countdownInterval.current = setInterval(() => {
+          setSessionCountdown((s) => {
+            if (s <= 1) { clearInterval(countdownInterval.current); doLogout(); return 0; }
+            return s - 1;
+          });
+        }, 1000);
+      }, WARNING_MS);
+      inactivityTimer.current = setTimeout(doLogout, TIMEOUT_MS);
+    };
+
+    const onActivity = () => {
+      if (sessionWarning) return; // user must explicitly click "Stay logged in"
+      startTimers();
+    };
+
+    startTimers();
+    const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
+    events.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
+    return () => {
+      clearAll();
+      events.forEach((e) => window.removeEventListener(e, onActivity));
+    };
+  }, [adminUser, sessionWarning]);
 
   const allItems = NAV.flatMap((s) => s.items);
   const current = allItems.find((i) => i.key === page);
@@ -8173,6 +8246,62 @@ export default function AdminPanel() {
         </div>
         <style>{`*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:${t.scrollThumb};border-radius:3px}@keyframes spin{to{transform:rotate(360deg)}}`}</style>
       </AdminCtx.Provider>
+
+      {/* Inactivity warning modal */}
+      {sessionWarning && (
+        <div style={{
+          position: "fixed", inset: 0, background: "#0008",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
+        }}>
+          <div style={{
+            background: t.card, borderRadius: 16, padding: "32px 28px",
+            maxWidth: 360, width: "90%", textAlign: "center",
+            boxShadow: "0 20px 60px #0005", border: `1px solid ${t.border}`,
+          }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>⏱</div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: t.white, marginBottom: 8 }}>
+              Session Expiring Soon
+            </div>
+            <div style={{ fontSize: 13, color: t.muted, marginBottom: 20 }}>
+              You've been inactive. You'll be logged out in
+            </div>
+            <div style={{
+              fontSize: 42, fontWeight: 800, color: t.orange,
+              marginBottom: 20, letterSpacing: -1,
+            }}>
+              {Math.floor(sessionCountdown / 60)}:{String(sessionCountdown % 60).padStart(2, "0")}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={async () => {
+                  clearInterval(countdownInterval.current);
+                  setSessionWarning(false);
+                  localStorage.removeItem("ra_admin_role");
+                  await adminLogout();
+                  setAdminUser(null);
+                }}
+                style={{
+                  flex: 1, padding: "10px 0", borderRadius: 8, border: "none",
+                  background: "#dc26261a", color: "#ef4444",
+                  fontWeight: 600, fontSize: 13, cursor: "pointer",
+                }}
+              >
+                Logout now
+              </button>
+              <button
+                onClick={() => setSessionWarning(false)}
+                style={{
+                  flex: 2, padding: "10px 0", borderRadius: 8, border: "none",
+                  background: t.orange, color: "#fff",
+                  fontWeight: 700, fontSize: 13, cursor: "pointer",
+                }}
+              >
+                Stay logged in
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </ThemeCtx.Provider>
   );
 }
