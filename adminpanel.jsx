@@ -89,6 +89,12 @@ import {
 import { supabase } from "./src/lib/supabase";
 import { v as V, check } from "./validators";
 
+// ── Protected account — cannot be blocked, deleted, or disabled from the panel ──
+const PROTECTED_EMAIL = "admin@roadassist.com";
+const isProtectedAccount = (u) =>
+  u?.email?.toLowerCase() === PROTECTED_EMAIL.toLowerCase() ||
+  u?.role === "superadmin";
+
 // ── Date helper: works with ISO strings (Supabase) and legacy Firestore Timestamps ──
 function toDate(v) {
   if (!v) return null;
@@ -2794,6 +2800,7 @@ function Users() {
   });
 
   const handleBlock = async (u) => {
+    if (isProtectedAccount(u)) return alert("⛔ This account is protected and cannot be blocked.");
     if (!window.confirm(`Block ${userLabel(u)}?`)) return;
     await blockUser(u.id, "Blocked by admin", adminUser, userLabel(u));
   };
@@ -2801,6 +2808,7 @@ function Users() {
     await unbanUser(u.id, adminUser, userLabel(u));
   };
   const handleDelete = async (u) => {
+    if (isProtectedAccount(u)) return alert("⛔ This account is protected and cannot be deleted.");
     if (!window.confirm(`Move ${userLabel(u)} to Deleted? You can restore later.`))
       return;
     await deleteUser(u.id, adminUser);
@@ -2823,6 +2831,7 @@ function Users() {
     );
   };
   const handlePermanent = async (u) => {
+    if (isProtectedAccount(u)) return alert("⛔ This account is protected and cannot be permanently deleted.");
     if (
       !window.confirm(
         `Permanently delete ${userLabel(u)}? CANNOT be undone.`,
@@ -2968,7 +2977,11 @@ function Users() {
                 </TD>
                 <TD>
                   <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                    {u.deletedAt ? (
+                    {isProtectedAccount(u) ? (
+                      <span style={{ fontSize: 10, color: "#f97316", fontWeight: 600 }}>
+                        🔒 Protected
+                      </span>
+                    ) : u.deletedAt ? (
                       <>
                         <Btn
                           variant="success"
@@ -6828,9 +6841,12 @@ function AdminUsersTab() {
   const canManage = adminRole === "superadmin" || adminRole === "manager";
 
   const isSuperadmin = (a) => a.role === "superadmin";
+  const isLocked = (a) => isProtectedAccount(a);  // protected = superadmin OR main email
   const isSelf = (a) => a.id === adminUser?.uid;
 
   const handleToggleDisabled = async (a) => {
+    if (isLocked(a)) return alert("⛔ This account is protected and cannot be disabled.");
+    if (isSelf(a)) return alert("⛔ You cannot disable your own account.");
     const next = !a.disabled;
     if (!window.confirm(`${next ? "Disable" : "Enable"} ${a.name || a.email}?`))
       return;
@@ -6844,9 +6860,11 @@ function AdminUsersTab() {
     );
   };
   const handleDelete = async (a) => {
+    if (isLocked(a)) return alert("⛔ This account is protected and cannot be removed.");
+    if (isSelf(a)) return alert("⛔ You cannot remove your own admin access.");
     if (
       !window.confirm(
-        `Remove admin access for ${a.name || a.email}? Their Firebase Auth account stays but they can no longer access this panel.`,
+        `Remove admin access for ${a.name || a.email}? They can no longer access this panel.`,
       )
     )
       return;
@@ -6911,7 +6929,7 @@ function AdminUsersTab() {
           <Tbl
             headers={["Admin", "Email", "Role", "Status", "Actions"]}
             rows={admins.map((a) => {
-              const locked = isSuperadmin(a);
+              const locked = isLocked(a);   // protected: superadmin or main admin email
               const self = isSelf(a);
               return (
                 <tr key={a.id}>
@@ -6955,8 +6973,8 @@ function AdminUsersTab() {
                   <TD>
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                       {locked ? (
-                        <span style={{ fontSize: 10, color: t.muted }}>
-                          Main user — locked
+                        <span style={{ fontSize: 10, color: "#f97316", fontWeight: 600 }}>
+                          🔒 Protected
                         </span>
                       ) : !canManage || self ? (
                         <span style={{ fontSize: 10, color: t.muted }}>—</span>

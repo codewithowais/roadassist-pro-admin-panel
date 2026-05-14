@@ -268,6 +268,19 @@ export const rejectKYC = async (id, reason, adminUser, entityName) => {
   }
 };
 
+// ── Protected account guard — server-side defense-in-depth ───────────────────
+const PROTECTED_EMAIL = "admin@roadassist.com";
+async function assertNotProtected(id) {
+  const { data } = await supabase.from(COLS.users).select("email, role").eq("id", id).single();
+  if (!data) return;
+  if (
+    data.email?.toLowerCase() === PROTECTED_EMAIL.toLowerCase() ||
+    data.role === "superadmin"
+  ) {
+    throw new Error("protected_account: this account cannot be modified or deleted");
+  }
+}
+
 // ── User CRUD ─────────────────────────────────────────────────────────────────
 export const getUsers = (cb) =>
   liveQuery({ table: COLS.users, order: { col: "created_at" }, limit: 100, cb });
@@ -287,12 +300,14 @@ export const addUser = (data) =>
 export const updateUser = (id, data) =>
   supabase.from(COLS.users).update(toSnakeKeys(data)).eq("id", id);
 
-export const deleteUser = (id, adminUser) =>
-  supabase.from(COLS.users).update({
+export const deleteUser = async (id, adminUser) => {
+  await assertNotProtected(id);
+  return supabase.from(COLS.users).update({
     deleted_at: new Date().toISOString(),
     deleted_by: adminUser?.uid || "unknown",
     deleted_by_email: adminUser?.email || null,
   }).eq("id", id);
+};
 
 export const restoreUser = (id) =>
   supabase.from(COLS.users).update({
@@ -301,10 +316,13 @@ export const restoreUser = (id) =>
     deleted_by_email: null,
   }).eq("id", id);
 
-export const permanentlyDeleteUser = (id) =>
-  supabase.from(COLS.users).delete().eq("id", id);
+export const permanentlyDeleteUser = async (id) => {
+  await assertNotProtected(id);
+  return supabase.from(COLS.users).delete().eq("id", id);
+};
 
 export const blockUser = async (id, reason, adminUser, entityName) => {
+  await assertNotProtected(id);
   await supabase.from(COLS.users).update({
     status: "blocked",
     blocked_reason: reason,
@@ -677,11 +695,15 @@ export const getAdminUsers = (cb) => {
   return () => supabase.removeChannel(channel);
 };
 
-export const updateAdminUser = (uid, data) =>
-  supabase.from(COLS.users).update(toSnakeKeys(data)).eq("id", uid);
+export const updateAdminUser = async (uid, data) => {
+  await assertNotProtected(uid);
+  return supabase.from(COLS.users).update(toSnakeKeys(data)).eq("id", uid);
+};
 
-export const removeAdminUser = (uid) =>
-  supabase.from(COLS.users).delete().eq("id", uid);
+export const removeAdminUser = async (uid) => {
+  await assertNotProtected(uid);
+  return supabase.from(COLS.users).delete().eq("id", uid);
+};
 
 // ── Service zones ─────────────────────────────────────────────────────────────
 export const getZones = (cb) =>
