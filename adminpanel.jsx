@@ -89,6 +89,46 @@ import {
 import { supabase } from "./src/lib/supabase";
 import { v as V, check } from "./validators";
 
+// ── Seed vendor credentials ───────────────────────────────────────────────────
+// All vendors seeded from verified_vendors_data.dart share the master password.
+// Email is generated deterministically from seed_id + category.
+const VENDOR_MASTER_PASSWORD = "Vendor@123";
+
+function getSeedCredentials(v) {
+  if (v?.source !== "seed" || !v?.seedId) return null;
+  const cat = (v.category || "vendor").toLowerCase();
+  const email = `${cat}-karachi-${v.seedId}@roadassist.test`;
+  return { email, password: VENDOR_MASTER_PASSWORD };
+}
+
+function CopyBtn({ text, label }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      title={`Copy ${label}`}
+      style={{
+        border: "none",
+        background: copied ? "#22c55e22" : "transparent",
+        cursor: "pointer",
+        fontSize: 11,
+        padding: "1px 5px",
+        borderRadius: 4,
+        color: copied ? "#22c55e" : "#888",
+        transition: "all 0.2s",
+      }}
+    >
+      {copied ? "✓" : "⎘"}
+    </button>
+  );
+}
+
 // ── Protected account — cannot be blocked, deleted, or disabled from the panel ──
 const PROTECTED_EMAIL = "admin@roadassist.com";
 const isProtectedAccount = (u) =>
@@ -4041,12 +4081,51 @@ function Vendors() {
                   <Badge status={v.status || "pending"} />
                 </TD>
                 <TD>
-                  <Badge
-                    status={v.source || "manual"}
-                    text={
-                      v.source === "self_registration" ? "Self-reg" : "Manual"
-                    }
-                  />
+                  {(() => {
+                    const creds = getSeedCredentials(v);
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <Badge
+                          status={v.source || "manual"}
+                          text={
+                            v.source === "seed"
+                              ? "Seed"
+                              : v.source === "self_registration"
+                              ? "Self-reg"
+                              : "Manual"
+                          }
+                        />
+                        {creds && (
+                          <div
+                            style={{
+                              fontSize: 10,
+                              background: "#f0f9ff",
+                              border: "1px solid #bae6fd",
+                              borderRadius: 5,
+                              padding: "4px 6px",
+                              minWidth: 160,
+                            }}
+                          >
+                            <div style={{ color: "#0369a1", fontWeight: 600, marginBottom: 2 }}>
+                              🔑 Login Credentials
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                              <span style={{ color: "#475569", userSelect: "all", wordBreak: "break-all" }}>
+                                {creds.email}
+                              </span>
+                              <CopyBtn text={creds.email} label="email" />
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 2, marginTop: 1 }}>
+                              <span style={{ color: "#475569", fontFamily: "monospace" }}>
+                                {creds.password}
+                              </span>
+                              <CopyBtn text={creds.password} label="password" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </TD>
                 <TD>
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
