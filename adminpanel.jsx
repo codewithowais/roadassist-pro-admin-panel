@@ -1638,7 +1638,7 @@ function AddVendorModal({ onClose, existing }) {
     // already exists, identified by `authUid` below.
     email: existing?.email || "",
     password: "",
-    // Existing Firebase Auth UID. Auto-populated from the vendor doc so
+    // Existing Supabase Auth UID. Auto-populated from the vendor doc so
     // admin can verify or edit the link. If empty when adding, we'll
     // create a new account from email/password.
     authUid: existing?.authUid || "",
@@ -1738,13 +1738,13 @@ function AddVendorModal({ onClose, existing }) {
       // KYC-approved too — they're skipping the queue.
       const isVerified = form.status === "verified";
 
-      // Resolve the vendor's Firebase Auth uid:
+      // Resolve the vendor's Supabase Auth UID:
       //   • Edit mode  → reuse existing.authUid
       //   • Admin pasted a uid → use that (links to an existing account)
       //   • Otherwise (new vendor + email/password) → create the account
       //     server-side via /api/users/create with role:'vendor'. The API
-      //     also writes users/{uid} with role so the mobile app routes
-      //     them to the vendor surface on first sign-in.
+      //     also writes a profiles row with role:'vendor' so the mobile
+      //     app routes them to the vendor surface on first sign-in.
       let resolvedAuthUid = (form.authUid || "").trim();
       if (!editing && !resolvedAuthUid) {
         try {
@@ -2077,8 +2077,8 @@ function AddVendorModal({ onClose, existing }) {
                 }}
               >
                 {editing
-                  ? "This vendor's mobile-app login is identified by the Auth UID below. Leave it blank if you haven't created an account for them yet."
-                  : "We'll create a Firebase Auth account so the vendor can sign into the mobile app and accept jobs. If they already have an account (e.g. they self-registered), paste the existing Auth UID instead."}
+                  ? "This vendor's mobile-app login is identified by the Supabase Auth UID below. Leave it blank if you haven't created an account for them yet."
+                  : "We'll create a Supabase Auth account so the vendor can sign into the mobile app and accept jobs. If they already have an account (e.g. they self-registered), paste the existing Auth UID instead."}
               </div>
               {!editing && (
                 <div
@@ -7277,7 +7277,7 @@ function AdminUserModal({ onClose, existing }) {
         </div>
         {editing && (
           <div style={{ fontSize: 11, color: t.muted, marginTop: 8, fontStyle: "italic" }}>
-            Email cannot be changed. To reset password, use Firebase Console.
+            Email cannot be changed. To reset password, use the Supabase Dashboard → Authentication → Users.
           </div>
         )}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
