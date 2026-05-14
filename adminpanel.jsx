@@ -7567,19 +7567,22 @@ export default function AdminPanel() {
   // Auth listener — verify admin role before exposing data listeners.
   useEffect(() => {
     let cancelled = false;
-    // Safety timeout: if Supabase client is misconfigured and onAuthStateChange
-    // never fires, fall through to login screen after 5s instead of spinning forever.
+    let authResolved = false;
+    // Safety timeout covers the ENTIRE auth flow including the profile DB fetch.
+    // Do NOT clear it when onAuthStateChange fires — only clear it when the full
+    // async chain completes. Clears prematurely = infinite spinner on slow networks.
     const safetyTimer = setTimeout(() => {
-      if (!cancelled) {
-        console.warn("[auth] onAuthStateChange did not fire within 5s — showing login");
+      if (!cancelled && !authResolved) {
+        console.warn("[auth] Auth flow did not resolve within 8s — showing login");
         setAuthLoading(false);
       }
-    }, 5000);
+    }, 8000);
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      clearTimeout(safetyTimer);
       const user = session?.user ?? null;
       if (!user) {
         if (!cancelled) {
+          authResolved = true;
+          clearTimeout(safetyTimer);
           setAdminUser(null);
           setAuthLoading(false);
         }
@@ -7592,12 +7595,14 @@ export default function AdminPanel() {
         let disabled = appMeta.disabled === true;
 
         if (!role) {
-          // Fallback: read from profiles table
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("role, status")
-            .eq("id", user.id)
-            .single();
+          // Fallback: read from profiles table with a 6s timeout so a slow/hung
+          // Supabase connection doesn't keep the spinner alive indefinitely.
+          const { data: profile } = await Promise.race([
+            supabase.from("profiles").select("role, status").eq("id", user.id).single(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("profile fetch timeout")), 6000)
+            ),
+          ]);
           role = profile?.role || null;
           disabled = profile?.status === "blocked";
         }
@@ -7617,7 +7622,11 @@ export default function AdminPanel() {
         await adminLogout();
         setAdminUser(null);
       } finally {
-        if (!cancelled) setAuthLoading(false);
+        if (!cancelled) {
+          authResolved = true;
+          clearTimeout(safetyTimer);
+          setAuthLoading(false);
+        }
       }
     });
     return () => {
