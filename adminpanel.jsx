@@ -7470,7 +7470,16 @@ export default function AdminPanel() {
   // Auth listener — verify admin role before exposing data listeners.
   useEffect(() => {
     let cancelled = false;
+    // Safety timeout: if Supabase client is misconfigured and onAuthStateChange
+    // never fires, fall through to login screen after 5s instead of spinning forever.
+    const safetyTimer = setTimeout(() => {
+      if (!cancelled) {
+        console.warn("[auth] onAuthStateChange did not fire within 5s — showing login");
+        setAuthLoading(false);
+      }
+    }, 5000);
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      clearTimeout(safetyTimer);
       const user = session?.user ?? null;
       if (!user) {
         if (!cancelled) {
@@ -7516,11 +7525,12 @@ export default function AdminPanel() {
     });
     return () => {
       cancelled = true;
+      clearTimeout(safetyTimer);
       subscription.unsubscribe();
     };
   }, []);
 
-  // Firestore listeners — only when logged in
+  // Supabase listeners — only when logged in
   useEffect(() => {
     if (!adminUser) return;
     const u1 = getVendors(setVendors);
