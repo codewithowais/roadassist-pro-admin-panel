@@ -33,11 +33,17 @@ export default async function handler(req, res) {
     return send(res, 429, { error: "rate_limited", retryAfter: limited.retryAfter });
   }
 
+  let caller;
   try {
-    await verifyAdmin(req);
+    caller = await verifyAdmin(req);
   } catch (e) {
     return send(res, e.status || 500, { error: e.message });
   }
+
+  // Read-only roles must not be able to create users.
+  const callerRole = caller?.role || null;
+  if (callerRole === "viewer")
+    return send(res, 403, { error: "insufficient_permissions" });
 
   let body;
   try {

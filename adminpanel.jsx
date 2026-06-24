@@ -2414,7 +2414,7 @@ function Dashboard() {
                     <Badge status={r.status} />
                   </TD>
                   <TD style={{ fontSize: 10, color: t.muted }}>
-                    {r.createdAt ? toDate(s.createdAt) : null?.toLocaleTimeString() || "—"}
+                    {(r.createdAt && toDate(r.createdAt)?.toLocaleTimeString()) || "—"}
                   </TD>
                 </tr>
               ))}
@@ -3569,6 +3569,25 @@ function VendorDocsModal({ vendor, onClose }) {
   const isR2Path = (p) => p && !/^https?:/i.test(p);
   const canManage = Boolean(vendor.applicationId);
 
+  // Rebuild the full `documents` JSONB from the current in-session paths,
+  // overriding one key. Writing the whole object is required because
+  // updateVendor() snake-cases top-level keys — a dotted key like
+  // `documents.cnicPath` would become the literal column "documents.cnic_path"
+  // and the update would silently fail to persist.
+  const docsWith = (changedKey, value) => {
+    const next = {
+      cnic: paths.cnic,
+      license: paths.license,
+      photo: paths.photo,
+      [changedKey]: value,
+    };
+    return {
+      cnicPath: next.cnic || null,
+      licensePath: next.license || null,
+      photoPath: next.photo || null,
+    };
+  };
+
   async function handleReplace(key, file) {
     if (!file || !canManage) return;
     setBusy((b) => ({ ...b, [key]: "uploading" }));
@@ -3581,9 +3600,7 @@ function VendorDocsModal({ vendor, onClose }) {
       if (oldPath && isR2Path(oldPath) && oldPath !== newPath) {
         try { await deleteVendorDoc(oldPath); } catch {}
       }
-      await updateVendor(vendor.id, {
-        [`documents.${key}Path`]: newPath,
-      });
+      await updateVendor(vendor.id, { documents: docsWith(key, newPath) });
       await logAudit(
         "vendor_doc_replaced",
         "vendor",
@@ -3609,9 +3626,7 @@ function VendorDocsModal({ vendor, onClose }) {
     setErrs((e) => ({ ...e, [key]: null }));
     try {
       if (isR2Path(p)) await deleteVendorDoc(p);
-      await updateVendor(vendor.id, {
-        [`documents.${key}Path`]: null,
-      });
+      await updateVendor(vendor.id, { documents: docsWith(key, null) });
       await logAudit(
         "vendor_doc_deleted",
         "vendor",
@@ -4439,7 +4454,7 @@ function Requests() {
                     <Badge status={r.status} />
                   </TD>
                   <TD style={{ fontSize: 10, color: t.muted }}>
-                    {r.createdAt ? toDate(s.createdAt) : null?.toLocaleTimeString() || "—"}
+                    {(r.createdAt && toDate(r.createdAt)?.toLocaleTimeString()) || "—"}
                   </TD>
                   <TD>
                     <Btn style={{ padding: "3px 7px", fontSize: 10 }}>
@@ -4743,8 +4758,8 @@ function SOS_Page() {
   // complete timeline. The top "live" panel still shows active for
   // quick triage.
   const sortedAll = [...sos].sort((a, b) => {
-    const ta = a.createdAt ? toDate(s.createdAt) : null?.getTime?.() || 0;
-    const tb = b.createdAt ? toDate(s.createdAt) : null?.getTime?.() || 0;
+    const ta = toDate(a.createdAt)?.getTime() || 0;
+    const tb = toDate(b.createdAt)?.getTime() || 0;
     return tb - ta;
   });
   const historyFiltered = sortedAll
@@ -4872,7 +4887,7 @@ function SOS_Page() {
                       <RecipientList items={s.recipients} />
                     )}
                     <div style={{ fontSize: 10, color: t.muted, marginTop: 4 }}>
-                      {s.createdAt ? toDate(s.createdAt) : null?.toLocaleString() || "—"}
+                      {(s.createdAt && toDate(s.createdAt)?.toLocaleString()) || "—"}
                     </div>
                   </div>
                   <div
@@ -5327,7 +5342,7 @@ function Reviews_Page() {
                   {r.text || "—"}
                 </TD>
                 <TD style={{ fontSize: 10, color: t.muted }}>
-                  {r.createdAt ? toDate(s.createdAt) : null?.toLocaleDateString() ||
+                  {(r.createdAt && toDate(r.createdAt)?.toLocaleDateString()) ||
                     r.date ||
                     "—"}
                 </TD>

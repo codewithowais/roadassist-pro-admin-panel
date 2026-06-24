@@ -3,24 +3,37 @@
 // signed with a Google service-account JWT via google-auth-library.
 // This removes the firebase-admin dependency from the server entirely.
 //
-// Env vars required:
-//   FIREBASE_SERVICE_ACCOUNT_JSON  — full service account JSON string
+// Env vars required (either name is accepted):
+//   FIREBASE_SERVICE_ACCOUNT       — full service account JSON string (preferred)
+//   FIREBASE_SERVICE_ACCOUNT_JSON  — legacy alias, also supported
 
 import { GoogleAuth } from "google-auth-library";
 
 let _auth = null;
 
+// Accept either env var name so deployments using FIREBASE_SERVICE_ACCOUNT
+// (as defined in .env / .env.template) work without renaming in Vercel.
+function getServiceAccountRaw() {
+  return (
+    process.env.FIREBASE_SERVICE_ACCOUNT ||
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+    null
+  );
+}
+
 function getGoogleAuth() {
   if (_auth) return _auth;
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const raw = getServiceAccountRaw();
   if (!raw) {
-    throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON env var missing");
+    throw new Error(
+      "FIREBASE_SERVICE_ACCOUNT (or FIREBASE_SERVICE_ACCOUNT_JSON) env var missing",
+    );
   }
   let sa;
   try {
     sa = JSON.parse(raw);
   } catch (e) {
-    throw new Error(`FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON: ${e.message}`);
+    throw new Error(`FIREBASE_SERVICE_ACCOUNT is not valid JSON: ${e.message}`);
   }
   _auth = new GoogleAuth({
     credentials: sa,
@@ -40,7 +53,7 @@ const FCM_BASE = "https://fcm.googleapis.com/v1/projects";
 
 // Extract project_id from the service account JSON
 function getProjectId() {
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const raw = getServiceAccountRaw();
   if (!raw) return null;
   try {
     return JSON.parse(raw).project_id;
