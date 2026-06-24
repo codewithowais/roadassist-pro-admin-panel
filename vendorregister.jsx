@@ -196,6 +196,22 @@ export default function VendorRegister() {
     if (!validate()) return;
     setLoading(true);
     try {
+      // Block dual-use: an email or phone may belong to a customer OR a vendor,
+      // never both. Reject up front before creating any account.
+      const { data: taken, error: takenErr } = await supabase.rpc(
+        "identity_taken",
+        { p_email: form.email.trim(), p_phone: form.phone || null },
+      );
+      if (!takenErr && taken === true) {
+        setErrors((p) => ({
+          ...p,
+          email:
+            "This email or phone is already registered (as a customer or vendor). A number/email can't be used for both.",
+        }));
+        setLoading(false);
+        return;
+      }
+
       // 1. Create the Supabase Auth account so the vendor can later log
       //    in to the mobile app once an admin approves their KYC.
       //    The /api/vendors/self-register endpoint handles the vendor row.

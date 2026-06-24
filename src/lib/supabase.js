@@ -223,6 +223,12 @@ export const approveKYC = async (id, adminUser, entityName) => {
       .eq("id", id)
       .single();
     if (vendor?.auth_uid) {
+      // Promote the linked account to a vendor so it routes to the vendor app
+      // and is no longer treated as a customer (a person is one or the other).
+      await supabase
+        .from(COLS.users)
+        .update({ role: "vendor" })
+        .eq("id", vendor.auth_uid);
       await supabase.from(COLS.notifications).insert({
         user_id: vendor.auth_uid,
         type: "systemInfo",
