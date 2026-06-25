@@ -103,7 +103,11 @@ import { v as V, check } from "./validators";
 const VENDOR_MASTER_PASSWORD = "Vendor@123";
 
 function getSeedCredentials(v) {
-  if (v?.source !== "seed" || !v?.seedId) return null;
+  // Only surface credentials when a real Auth account actually exists (auth_uid
+  // is set). Seed vendors inserted as rows-only have NO login until the
+  // seed-vendors-with-auth.mjs script is run — showing credentials for them is
+  // misleading (they fail with "Invalid login").
+  if (v?.source !== "seed" || !v?.seedId || !v?.authUid) return null;
   const cat = (v.category || "vendor").toLowerCase();
   const email = `${cat}-karachi-${v.seedId}@roadassist.test`;
   return { email, password: VENDOR_MASTER_PASSWORD };
@@ -4118,6 +4122,21 @@ function Vendors() {
                               : "Manual"
                           }
                         />
+                        {v.source === "seed" && !v.authUid && (
+                          <div
+                            style={{
+                              fontSize: 9,
+                              color: "#b45309",
+                              background: "#fffbeb",
+                              border: "1px solid #fde68a",
+                              borderRadius: 5,
+                              padding: "3px 6px",
+                              minWidth: 160,
+                            }}
+                          >
+                            ⚠ No login yet — run seed-vendors-with-auth
+                          </div>
+                        )}
                         {creds && (
                           <div
                             style={{
