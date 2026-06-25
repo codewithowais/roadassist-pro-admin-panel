@@ -38,6 +38,8 @@ import {
   updateVendor,
   deleteVendor,
   approveKYC,
+  provisionVendorAccount,
+  provisionAllVendorLogins,
   rejectKYC,
   restoreVendor,
   permanentlyDeleteVendor,
@@ -4032,6 +4034,28 @@ function Vendors() {
           onChange={(e) => setSearch(e.target.value)}
         />
         <Btn
+          variant="secondary"
+          style={{ whiteSpace: "nowrap", marginBottom: 10 }}
+          onClick={async () => {
+            if (
+              !window.confirm(
+                "Create login accounts for every vendor that doesn't have one yet? Seed vendors will use the password Vendor@123.",
+              )
+            )
+              return;
+            try {
+              const r = await provisionAllVendorLogins();
+              alert(
+                `Done. ${r.created} login(s) created, ${r.failed} failed, of ${r.total} vendor(s) without an account.`,
+              );
+            } catch (e) {
+              alert("Failed: " + (e.message || e));
+            }
+          }}
+        >
+          Create Logins
+        </Btn>
+        <Btn
           variant="primary"
           style={{ whiteSpace: "nowrap", marginBottom: 10 }}
           onClick={() => setShowAdd(true)}
@@ -4122,8 +4146,20 @@ function Vendors() {
                               : "Manual"
                           }
                         />
-                        {v.source === "seed" && !v.authUid && (
-                          <div
+                        {!v.authUid && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                const r = await provisionVendorAccount(v.id);
+                                alert(
+                                  `Login created:\n${r.email}` +
+                                    (r.password ? `\n${r.password}` : ""),
+                                );
+                              } catch (e) {
+                                alert("Failed: " + (e.message || e));
+                              }
+                            }}
+                            title="Create a Supabase login account for this vendor"
                             style={{
                               fontSize: 9,
                               color: "#b45309",
@@ -4132,10 +4168,12 @@ function Vendors() {
                               borderRadius: 5,
                               padding: "3px 6px",
                               minWidth: 160,
+                              cursor: "pointer",
+                              textAlign: "left",
                             }}
                           >
-                            ⚠ No login yet — run seed-vendors-with-auth
-                          </div>
+                            ⚠ No login yet — click to create
+                          </button>
                         )}
                         {creds && (
                           <div

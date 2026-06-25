@@ -212,25 +212,59 @@ export const permanentlyDeleteVendor = async (id) => {
   return supabase.from(COLS.vendors).delete().eq("id", id);
 };
 
+// Ensure a vendor has a real Supabase Auth login account (creates one if
+// missing, links auth_uid, sets role='vendor'). Server-side via service role.
+export const provisionVendorAccount = async (vendorId, password) => {
+  const token = await getAuthToken();
+  const res = await fetch("/api/vendors/provision-account", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ vendorId, ...(password ? { password } : {}) }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `provision_failed_${res.status}`);
+  return json;
+};
+
+// Provision logins for every vendor that doesn't have one yet (e.g. seed
+// vendors). One call per vendor to stay within serverless time limits.
+export const provisionAllVendorLogins = async (onProgress) => {
+  const { data: rows } = await supabase
+    .from(COLS.vendors)
+    .select("id")
+    .is("auth_uid", null)
+    .is("deleted_at", null);
+  const list = rows || [];
+  let done = 0,
+    created = 0,
+    failed = 0;
+  for (const r of list) {
+    try {
+      const res = await provisionVendorAccount(r.id);
+      if (res?.created) created++;
+    } catch {
+      failed++;
+    }
+    done++;
+    onProgress?.({ done, total: list.length, created, failed });
+  }
+  return { total: list.length, created, failed };
+};
+
 export const approveKYC = async (id, adminUser, entityName) => {
   // The enforce_kyc_state_machine trigger forces is_verified=true when kyc='approved'.
   await supabase.from(COLS.vendors).update({ kyc: "approved" }).eq("id", id);
   await logAudit("vendor_kyc_approved", "vendor", id, { entityName: entityName || null }, adminUser);
+  // Guarantee the approved vendor has a login account (creates it if missing,
+  // links auth_uid + sets role='vendor'), then notify them.
   try {
-    const { data: vendor } = await supabase
-      .from(COLS.vendors)
-      .select("auth_uid")
-      .eq("id", id)
-      .single();
-    if (vendor?.auth_uid) {
-      // Promote the linked account to a vendor so it routes to the vendor app
-      // and is no longer treated as a customer (a person is one or the other).
-      await supabase
-        .from(COLS.users)
-        .update({ role: "vendor" })
-        .eq("id", vendor.auth_uid);
+    const result = await provisionVendorAccount(id);
+    if (result?.uid) {
       await supabase.from(COLS.notifications).insert({
-        user_id: vendor.auth_uid,
+        user_id: result.uid,
         type: "systemInfo",
         title: "You're approved",
         body: "KYC complete — you can now accept jobs in the RoadAssist Pro app.",
@@ -238,7 +272,7 @@ export const approveKYC = async (id, adminUser, entityName) => {
       });
     }
   } catch (e) {
-    console.warn("[approveKYC] notify failed:", e);
+    console.warn("[approveKYC] provision/notify failed:", e);
   }
 };
 
