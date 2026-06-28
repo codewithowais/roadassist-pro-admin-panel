@@ -514,14 +514,14 @@ export const permanentlyDeleteReview = (id) =>
   supabase.from(COLS.reviews).delete().eq("id", id);
 
 // ── Notifications ─────────────────────────────────────────────────────────────
-export const getNotifications = (cb) => {
+export const getNotifications = (cb, limit = 30) => {
   const fetchAll = async () => {
     const { data } = await supabase
       .from(COLS.notifications)
       .select("*")
       .not("sent_at", "is", null)  // broadcast history only (has sentAt)
       .order("sent_at", { ascending: false })
-      .limit(30);
+      .limit(limit);
     cb((data || []).map(camelize));
   };
   fetchAll();
@@ -532,8 +532,22 @@ export const getNotifications = (cb) => {
   return () => supabase.removeChannel(channel);
 };
 
+// Update a broadcast history row with the final delivery outcome. Best-effort:
+// a failed status write must never mask the actual send result to the caller.
+const finalizeNotification = async (rowId, status, deliveryError) => {
+  if (!rowId) return;
+  try {
+    await supabase
+      .from(COLS.notifications)
+      .update({ status_label: status, delivery_error: deliveryError || null })
+      .eq("id", rowId);
+  } catch {
+    /* ignore — the row stays at 'sending', caller still gets the real result */
+  }
+};
+
 export const sendNotification = async ({ title, body, topic = "all", token, sentBy }) => {
-  await supabase.from(COLS.notifications).insert({
+  const { data: row } = await supabase.from(COLS.notifications).insert({
     user_id: "",
     type: "broadcast",
     title,
@@ -542,11 +556,12 @@ export const sendNotification = async ({ title, body, topic = "all", token, sent
     target_token: token || null,
     sent_by: sentBy,
     sent_at: new Date().toISOString(),
-    status_label: "sent",
+    status_label: "sending",
     is_read: false,
-  });
+  }).select("id").single();
+  const rowId = row?.id;
 
-  let deliveryStatus = "queued";
+  let deliveryStatus = "failed";
   let deliveryError;
   try {
     const idToken = await getAuthToken(true);
@@ -567,6 +582,7 @@ export const sendNotification = async ({ title, body, topic = "all", token, sent
     deliveryStatus = "failed";
     deliveryError = e.message || String(e);
   }
+  await finalizeNotification(rowId, deliveryStatus, deliveryError);
   return { saved: true, deliveryStatus, deliveryError };
 };
 
@@ -574,7 +590,7 @@ export const sendNotificationToAudience = async ({ title, body, audience = "user
   if (audience !== "users" && audience !== "vendors") {
     throw new Error(`Unknown audience: ${audience}`);
   }
-  await supabase.from(COLS.notifications).insert({
+  const { data: row } = await supabase.from(COLS.notifications).insert({
     user_id: "",
     type: "broadcast",
     title,
@@ -583,9 +599,10 @@ export const sendNotificationToAudience = async ({ title, body, audience = "user
     target_token: null,
     sent_by: sentBy,
     sent_at: new Date().toISOString(),
-    status_label: "sent",
+    status_label: "sending",
     is_read: false,
-  });
+  }).select("id").single();
+  const rowId = row?.id;
 
   // Fetch FCM tokens filtered by role — vendors get vendor broadcasts, customers get customer broadcasts
   let q = supabase.from(COLS.users).select("fcm_token").eq("status", "active");
@@ -598,11 +615,13 @@ export const sendNotificationToAudience = async ({ title, body, audience = "user
   });
   const tokens = Array.from(tokenSet);
   if (tokens.length === 0) {
+    await finalizeNotification(rowId, "no_tokens", "No active devices have a registered FCM token");
     return { saved: true, deliveryStatus: "no_tokens", sentTokens: 0, successCount: 0, failureCount: 0, failedTokens: [] };
   }
 
   const idToken = await getAuthToken(true);
   if (!idToken) {
+    await finalizeNotification(rowId, "failed", "not_signed_in");
     return { saved: true, deliveryStatus: "failed", sentTokens: tokens.length, successCount: 0, failureCount: tokens.length, failedTokens: [], deliveryError: "not_signed_in" };
   }
 
@@ -634,7 +653,13 @@ export const sendNotificationToAudience = async ({ title, body, audience = "user
       deliveryError = e.message || String(e);
     }
   }
-  return { saved: true, deliveryStatus: failureCount === 0 ? "delivered" : "partial", sentTokens: tokens.length, successCount, failureCount, failedTokens, deliveryError };
+  const deliveryStatus = failureCount === 0 ? "delivered" : successCount === 0 ? "failed" : "partial";
+  await finalizeNotification(
+    rowId,
+    deliveryStatus,
+    deliveryStatus === "delivered" ? null : deliveryError || `${failureCount} of ${tokens.length} device(s) failed`,
+  );
+  return { saved: true, deliveryStatus, sentTokens: tokens.length, successCount, failureCount, failedTokens, deliveryError };
 };
 
 export const sendNotificationToUsers = async ({ title, body, uids, sentBy }) => {
@@ -648,7 +673,7 @@ export const sendNotificationToUsers = async ({ title, body, uids, sentBy }) => 
     is_read: false,
   }));
   await supabase.from(COLS.notifications).insert(perUserInserts);
-  await supabase.from(COLS.notifications).insert({
+  const { data: row } = await supabase.from(COLS.notifications).insert({
     user_id: "",
     type: "broadcast",
     title,
@@ -657,9 +682,10 @@ export const sendNotificationToUsers = async ({ title, body, uids, sentBy }) => 
     target_token: null,
     sent_by: sentBy,
     sent_at: new Date().toISOString(),
-    status_label: "sent",
+    status_label: "sending",
     is_read: false,
-  });
+  }).select("id").single();
+  const rowId = row?.id;
 
   // Collect FCM tokens in chunks of 30 (Supabase `in` limit)
   const tokenSet = new Set();
@@ -676,11 +702,14 @@ export const sendNotificationToUsers = async ({ title, body, uids, sentBy }) => 
   }
   const tokens = Array.from(tokenSet);
   if (tokens.length === 0) {
+    // Inbox copies were saved, but nobody has a registered device.
+    await finalizeNotification(rowId, "no_tokens", "Saved to inbox(es), but no recipient has a registered FCM token");
     return { saved: true, recipients: uids.length, deliveryStatus: "no_tokens", sentTokens: 0, successCount: 0, failureCount: 0, failedTokens: [] };
   }
 
   const idToken = await getAuthToken(true);
   if (!idToken) {
+    await finalizeNotification(rowId, "failed", "not_signed_in");
     return { saved: true, recipients: uids.length, deliveryStatus: "failed", sentTokens: tokens.length, successCount: 0, failureCount: tokens.length, failedTokens: [], deliveryError: "not_signed_in" };
   }
 
@@ -711,7 +740,13 @@ export const sendNotificationToUsers = async ({ title, body, uids, sentBy }) => 
       deliveryError = e.message || String(e);
     }
   }
-  return { saved: true, recipients: uids.length, deliveryStatus: failureCount === 0 ? "delivered" : "partial", sentTokens: tokens.length, successCount, failureCount, failedTokens, deliveryError };
+  const deliveryStatus = failureCount === 0 ? "delivered" : successCount === 0 ? "failed" : "partial";
+  await finalizeNotification(
+    rowId,
+    deliveryStatus,
+    deliveryStatus === "delivered" ? null : deliveryError || `${failureCount} of ${tokens.length} device(s) failed`,
+  );
+  return { saved: true, recipients: uids.length, deliveryStatus, sentTokens: tokens.length, successCount, failureCount, failedTokens, deliveryError };
 };
 
 // ── Audit log ─────────────────────────────────────────────────────────────────

@@ -237,7 +237,8 @@ CREATE TABLE IF NOT EXISTS public.notifications (
   target_token   text,
   sent_by        text,
   sent_at        timestamptz,
-  status_label   text,
+  status_label   text,        -- 'sending','delivered','partial','failed','no_tokens','sent'(legacy)
+  delivery_error text,        -- failure reason when status_label is 'partial'/'failed'
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 

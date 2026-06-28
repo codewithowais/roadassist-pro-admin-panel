@@ -279,6 +279,23 @@ const BADGE_MAP = {
   targeted: "blue",
   segment: "green",
   self_registration: "purple",
+  // Notification delivery outcomes
+  delivered: "green",
+  partial: "yellow",
+  failed: "red",
+  no_tokens: "gray",
+  sending: "blue",
+  sent: "blue", // legacy rows written before delivery tracking existed
+};
+
+// Human-readable labels for notification delivery statuses (status_label).
+const DELIVERY_LABELS = {
+  delivered: "Delivered",
+  partial: "Partly failed",
+  failed: "Failed",
+  no_tokens: "No devices",
+  sending: "Sending…",
+  sent: "Sent",
 };
 // Canonical category enum — MUST match the mobile app's filter values.
 // See SCHEMA.md → vendors.category. Changing these strings will break the
@@ -1203,7 +1220,7 @@ function RecipientPicker({ users, vendors, value, onChange, t }) {
 // ─────────────────────────────────────────────────────────────────
 function NotificationPanel({ open, onClose }) {
   const t = useTheme();
-  const { notifications, adminUser, users, vendors } = useAdmin();
+  const { notifications, adminUser, users, vendors, notifLimit, loadMoreNotifications } = useAdmin();
   const [tab, setTab] = useState("history");
   // mode = "topic"  → FCM topic broadcast (fastest, requires devices
   //                   subscribed to the topic)
@@ -1435,7 +1452,19 @@ function NotificationPanel({ open, onClose }) {
           ))}
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+        <div
+          style={{ flex: 1, overflowY: "auto", padding: 14 }}
+          onScroll={(e) => {
+            if (tab !== "history") return;
+            const el = e.currentTarget;
+            if (
+              el.scrollHeight - el.scrollTop - el.clientHeight < 80 &&
+              notifications.length >= notifLimit
+            ) {
+              loadMoreNotifications();
+            }
+          }}
+        >
           {/* Send tab */}
           {tab === "send" && (
             <>
@@ -1575,28 +1604,55 @@ function NotificationPanel({ open, onClose }) {
                     >
                       {n.title}
                     </div>
-                    <Badge
-                      status={
-                        n.topic === "all"
-                          ? "broadcast"
-                          : n.topic === "vendors"
-                            ? "segment"
-                            : "targeted"
-                      }
-                      text={n.topic}
-                    />
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      {n.statusLabel && n.statusLabel !== "sent" && (
+                        <Badge
+                          status={n.statusLabel}
+                          text={DELIVERY_LABELS[n.statusLabel] || n.statusLabel}
+                        />
+                      )}
+                      <Badge
+                        status={
+                          n.topic === "all"
+                            ? "broadcast"
+                            : n.topic === "vendors"
+                              ? "segment"
+                              : "targeted"
+                        }
+                        text={n.topic}
+                      />
+                    </div>
                   </div>
                   <div
                     style={{ fontSize: 11, color: t.text2, marginBottom: 4 }}
                   >
                     {n.body}
                   </div>
+                  {n.deliveryError && (
+                    <div
+                      style={{ fontSize: 10, color: "#dc2626", marginBottom: 4 }}
+                    >
+                      ⚠ {n.deliveryError}
+                    </div>
+                  )}
                   <div style={{ fontSize: 10, color: t.muted }}>
                     By {n.sentBy} ·{" "}
                     {toDate(n.sentAt)?.toLocaleString() || "Just now"}
                   </div>
                 </div>
               ))}
+              {notifications.length >= notifLimit && (
+                <div
+                  style={{
+                    textAlign: "center",
+                    fontSize: 10,
+                    color: t.muted,
+                    padding: "8px 0",
+                  }}
+                >
+                  Scroll for more…
+                </div>
+              )}
             </>
           )}
         </div>
@@ -5554,7 +5610,7 @@ function auditActionMeta(action) {
 
 function Notifications_Page() {
   const t = useTheme();
-  const { notifications, adminUser, users, vendors } = useAdmin();
+  const { notifications, adminUser, users, vendors, notifLimit, loadMoreNotifications } = useAdmin();
   // mode: see NotificationPanel above for full description.
   const [form, setForm] = useState({
     title: "",
@@ -5794,7 +5850,18 @@ function Notifications_Page() {
         {notifications.length === 0 ? (
           <Empty icon="🔔" text="No notifications sent yet" />
         ) : (
-          <div style={{ maxHeight: 480, overflowY: "auto" }}>
+          <div
+            style={{ maxHeight: 480, overflowY: "auto" }}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              if (
+                el.scrollHeight - el.scrollTop - el.clientHeight < 80 &&
+                notifications.length >= notifLimit
+              ) {
+                loadMoreNotifications();
+              }
+            }}
+          >
             {notifications.map((n, i) => (
               <div
                 key={n.id || i}
@@ -5804,9 +5871,23 @@ function Notifications_Page() {
                 }}
               >
                 <div
-                  style={{ fontSize: 13, fontWeight: 600, color: t.text1 }}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 8,
+                  }}
                 >
-                  {n.title || "—"}
+                  <div
+                    style={{ fontSize: 13, fontWeight: 600, color: t.text1, flex: 1 }}
+                  >
+                    {n.title || "—"}
+                  </div>
+                  {n.statusLabel && n.statusLabel !== "sent" && (
+                    <Badge
+                      status={n.statusLabel}
+                      text={DELIVERY_LABELS[n.statusLabel] || n.statusLabel}
+                    />
+                  )}
                 </div>
                 <div
                   style={{
@@ -5818,6 +5899,13 @@ function Notifications_Page() {
                 >
                   {n.body || ""}
                 </div>
+                {n.deliveryError && (
+                  <div
+                    style={{ fontSize: 10, color: "#dc2626", marginTop: 4 }}
+                  >
+                    ⚠ {n.deliveryError}
+                  </div>
+                )}
                 <div
                   style={{
                     fontSize: 10,
@@ -5836,6 +5924,18 @@ function Notifications_Page() {
                 </div>
               </div>
             ))}
+            {notifications.length >= notifLimit && (
+              <div
+                style={{
+                  textAlign: "center",
+                  fontSize: 10,
+                  color: t.muted,
+                  padding: "8px 0",
+                }}
+              >
+                Scroll for more…
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -7640,6 +7740,7 @@ export default function AdminPanel() {
   const [sos, setSos] = useState([]);
   const [reviews, setReviews] = useState([]);
   const [notifications, setNotifs] = useState([]);
+  const [notifLimit, setNotifLimit] = useState(30);
   const [auditLogData, setAudit] = useState([]);
 
   // FCM foreground
@@ -7658,10 +7759,16 @@ export default function AdminPanel() {
     const u3 = getRequests(setRequests);
     const u4 = getSOS(setSos);
     const u5 = getReviews(setReviews);
-    const u6 = getNotifications(setNotifs);
     const u7 = getAuditLog(setAudit);
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u7(); };
   }, [adminUser]);
+
+  // Notifications live in their own listener so growing the page size for
+  // infinite scroll only resubscribes notifications — not every other feed.
+  useEffect(() => {
+    if (!adminUser) return;
+    return getNotifications(setNotifs, notifLimit);
+  }, [adminUser, notifLimit]);
 
   // FCM foreground messages
   useEffect(() => {
@@ -7689,6 +7796,8 @@ export default function AdminPanel() {
     sos,
     reviews,
     notifications,
+    notifLimit,
+    loadMoreNotifications: () => setNotifLimit((l) => l + 30),
     auditLogData,
     adminUser,
     adminProfile,
