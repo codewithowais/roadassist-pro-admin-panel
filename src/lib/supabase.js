@@ -135,6 +135,26 @@ function liveQuery({ table, filter, order, limit: lim, cb }) {
 export const getVendors = (cb) =>
   liveQuery({ table: COLS.vendors, order: { col: "created_at" }, limit: 100, cb });
 
+// Exact totals for the dashboard KPI cards. The live lists are capped at 100
+// rows for performance, so KPIs must come from a real count query (head:true
+// transfers no rows) instead of `array.length`.
+export const getDashboardCounts = async () => {
+  const count = async (table, applyFilter) => {
+    let q = supabase.from(table).select("id", { count: "exact", head: true });
+    if (applyFilter) q = applyFilter(q);
+    const { count: c, error } = await q;
+    return error ? null : (c ?? 0);
+  };
+  const [totalCustomers, activeVendors, pendingKyc, totalRequests] =
+    await Promise.all([
+      count(COLS.users, (q) => q.eq("role", "customer").is("deleted_at", null)),
+      count(COLS.vendors, (q) => q.is("deleted_at", null).eq("status", "verified")),
+      count(COLS.vendors, (q) => q.is("deleted_at", null).eq("kyc", "pending")),
+      count(COLS.requests),
+    ]);
+  return { totalCustomers, activeVendors, pendingKyc, totalRequests };
+};
+
 export const addVendor = (data) =>
   supabase.from(COLS.vendors).insert({
     status: "pending",

@@ -34,6 +34,7 @@ import {
   adminLogin,
   adminLogout,
   getVendors,
+  getDashboardCounts,
   addVendor,
   updateVendor,
   deleteVendor,
@@ -2235,6 +2236,15 @@ function AddVendorModal({ onClose, existing }) {
 function Dashboard() {
   const t = useTheme();
   const { vendors, users, requests, sos } = useAdmin();
+  // Real totals (the live lists above are capped at 100 rows).
+  const [counts, setCounts] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    getDashboardCounts()
+      .then((c) => { if (alive) setCounts(c); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const TT = {
     background: t.ttBg,
     border: `1px solid ${t.ttBdr}`,
@@ -2265,15 +2275,18 @@ function Dashboard() {
       >
         <KCard
           label="Total Users"
-          value={users.length || "—"}
+          value={
+            counts?.totalCustomers ?? (users.length || "—")
+          }
           delta="Live from Supabase"
           accent={t.orange}
         />
         <KCard
           label="Active Vendors"
           value={
-            vendors.filter((v) => !v.deletedAt && v.status === "verified")
-              .length || "—"
+            counts?.activeVendors ??
+            (vendors.filter((v) => !v.deletedAt && v.status === "verified")
+              .length || "—")
           }
           delta="Verified only"
           accent="#22c55e"
@@ -2293,6 +2306,7 @@ function Dashboard() {
         <KCard
           label="Pending KYC"
           value={
+            counts?.pendingKyc ??
             vendors.filter((v) => !v.deletedAt && v.kyc === "pending").length
           }
           delta="Needs review"
@@ -2300,7 +2314,7 @@ function Dashboard() {
         />
         <KCard
           label="Total Requests"
-          value={requests.length}
+          value={counts?.totalRequests ?? requests.length}
           delta="All time"
         />
       </div>
